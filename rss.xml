@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"
+    xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <channel>
+        <title>Henri's Blog</title>
+        <link>https://deliquus.com</link>
+        <description><![CDATA[Henri's private blog]]></description>
+        <atom:link href="https://deliquus.com/rss.xml" rel="self"
+                   type="application/rss+xml" />
+        <lastBuildDate>Mon, 30 Jul 2018 00:00:00 UT</lastBuildDate>
+        <item>
+    <title>Making Haskell as fast as C: Imperative programming in Haskell</title>
+    <link>https://deliquus.com/posts/2018-07-30-imperative-programming-in-haskell.html</link>
+    <description><![CDATA[<p>Implementing efficient and fast data structures in Haskell is not straightforward. A functional implementation of an abstract data type is often orders of magnitude slower than an imperative solution that provides the same functionality. This blog post compares several implementations of a concrete and relatively simple abstract data type in terms of execution time. Ultimately, we develop an imperative data structure using native Haskell code that is as fast as its C equivalent.</p>]]></description>
+    <pubDate>Mon, 30 Jul 2018 00:00:00 UT</pubDate>
+    <guid>https://deliquus.com/posts/2018-07-30-imperative-programming-in-haskell.html</guid>
+    <dc:creator>Henri Verroken</dc:creator>
+</item>
+<item>
+    <title>Using Servant to orchestrate LXD containers</title>
+    <link>https://deliquus.com/posts/2017-10-02-using-servant-to-orchestrate-lxd-containers.html</link>
+    <description><![CDATA[<p>The <a href="https://hackage.haskell.org/package/lxd-client">lxd-client</a> package is a client library for the LXD daemon written in Haskell. It provides a high-level Haskell interface to communicate with the LXD daemon, which allows you to launch and configure VM-like containers, create images, manage networks and volumes, and many other things. This blog post explains how the <a href="https://haskell-servant.github.io/">servant</a> libraries are used to create a non-trivial type-safe HTTP/WebSockets client and discusses the efforts involved.</p>]]></description>
+    <pubDate>Mon, 02 Oct 2017 00:00:00 UT</pubDate>
+    <guid>https://deliquus.com/posts/2017-10-02-using-servant-to-orchestrate-lxd-containers.html</guid>
+    <dc:creator>Henri Verroken</dc:creator>
+</item>
+<item>
+    <title>Haskey: User-defined Schemas, Monad Transformers and Future Work (Summer of Haskell 2017)</title>
+    <link>https://deliquus.com/posts/2017-09-14-haskey-user-defined-schemas-and-monad-transformers.html</link>
+    <description><![CDATA[<p>In this blog post we present the features we’ve added to <a href="https://github.com/haskell-haskey">Haskey</a> during the last weeks of the <a href="https://summer.haskell.org/news/2017-05-24-accepted-projects.html">Summer of Haskell project</a>. These features include user-defined schemas, multi-table support and a monad transformer that supports Haskey transactions. They are vital for the usability of Haskey, which means Haskey can finally be experimentally incorporated in serious projects. We also believe that the inclusion of these features provide the necessary functionality for Haskey to be a successful project in the context of <a href="https://summer.haskell.org/news/2017-05-24-accepted-projects.html">Summer of Haskell 2017</a>.</p>]]></description>
+    <pubDate>Thu, 14 Sep 2017 00:00:00 UT</pubDate>
+    <guid>https://deliquus.com/posts/2017-09-14-haskey-user-defined-schemas-and-monad-transformers.html</guid>
+    <dc:creator>Henri Verroken</dc:creator>
+</item>
+<item>
+    <title>Introducing Haskey (Summer of Haskell 2017)</title>
+    <link>https://deliquus.com/posts/2017-08-24-introducing-haskey.html</link>
+    <description><![CDATA[<p>This blog post introduces the <a href="https://github.com/haskell-haskey">Haskey project</a>, an ACID compliant embedded key-value store entirely written in Haskell, based on an MVCC B+-tree implementation. It was developed as part of the <a href="https://summer.haskell.org/news/2017-05-24-accepted-projects.html">Summer of Haskell 2017</a>. We will take a look at two libraries that we wrote this summer.</p>]]></description>
+    <pubDate>Thu, 24 Aug 2017 00:00:00 UT</pubDate>
+    <guid>https://deliquus.com/posts/2017-08-24-introducing-haskey.html</guid>
+    <dc:creator>Henri Verroken</dc:creator>
+</item>
+
+    </channel>
+</rss>

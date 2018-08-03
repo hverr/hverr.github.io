@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="x-ua-compatible" content="ie=edge">
+    <meta http-equiv="x-ua-compatible" content="chrome=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Henri's Blog - Haskey: User-defined Schemas, Monad Transformers and Future Work (Summer of Haskell 2017)</title>
+    <link rel="stylesheet" href="../css/default.css" />
+    <link rel="stylesheet" href="../css/syntax.css" />
+    <!--[if lt IE 9]>
+    <script src="//html5shiv.googlecode.com/svn/trunk/html5.js"></script>
+    <![endif]-->
+  </head>
+  <body>
+    <div class="wrapper">
+      <header>
+        <h1><a style="color:black;" href="../">About</a></h1>
+        <p>
+          I'm Henri Verroken, I recently graduated with a Master's degree in
+          Computer Science and Engineering. This blog is mostly about Haskell.
+          Have fun reading!
+        </p>
+        <p>
+          <a href="https://be.linkedin.com/in/hverr"><img src="../images/linkedin.svg" alt="LinkedIn"></a>
+          <a href="https://github.com/hverr"><img src="../images/github.svg" alt="GitHub"></a>
+          <a href="../atom.xml"><img src="../images/rss.svg" alt="RSS"></a>
+        </p>
+        <p>
+          <i>
+            Found something incorrect? Found a typo? Other question or remark?
+            Drop me an email at
+            <script>
+              var u = "henri"; var v = "verroken"; var g = "gmail"; var t = "com";
+              var e = u + v + "@" + g + "." + t;
+              var a = "mail"; var b = "to:";
+              document.write('<a href="' + a + b + e + '">' + e + '</a>');
+            </script>
+          </i>
+        </p>
+      </header>
+
+      <section>
+        <h1>Haskey: User-defined Schemas, Monad Transformers and Future Work (Summer of Haskell 2017)</h1>
+        <p>Posted on September 14, 2017  - <a href="https://www.reddit.com/r/haskell/comments/709l8i/haskey_userdefined_schemas_monad_transformers_and/?ref=share&ref_source=link">Discussion</a>  - <a href="../">All posts</a></p>
+<p><i>By Henri Verroken and Steven Keuchel</i></p>
+<article>
+  <p>In this blog post we present the features we’ve added to <a href="https://github.com/haskell-haskey">Haskey</a> during the last weeks of the <a href="https://summer.haskell.org/news/2017-05-24-accepted-projects.html">Summer of Haskell project</a>. These features include user-defined schemas, multi-table support and a monad transformer that supports Haskey transactions. They are vital for the usability of Haskey, which means Haskey can finally be experimentally incorporated in serious projects. We also believe that the inclusion of these features provide the necessary functionality for Haskey to be a successful project in the context of <a href="https://summer.haskell.org/news/2017-05-24-accepted-projects.html">Summer of Haskell 2017</a>.</p>
+<!--more-->
+<p><a href="https://github.com/haskell-haskey">Haskey</a> is an ACID compliant embedded key-value store entirely written in Haskell. It was developed as part of the <a href="https://summer.haskell.org/news/2017-05-24-accepted-projects.html">Summer of Haskell 2017</a>. This blog post is a follow-up to the previous blog post on Haskey: <a href="../posts/2017-08-24-introducing-haskey.html"><em>Introducing Haskey</em></a>. Along with the features presented in this blog post, the current version of Haskey fixes many bugs that severely limited Haskey’s usability. As a result, you can now start using Haskey for serious experimentation. We also very much welcome pull requests and all criticism to help ensure the future of Haskey as a community project (more on that in the final section).</p>
+<p><em>EDIT (9-Apr-2018): Note that this document might use outdated APIs. See <a href="https://github.com/haskell-haskey/haskey-mtl/blob/master/docs/tutorial.md">this up to date tutorial</a>, which covers a lot of the content in this article, to get started with Haskey.</em></p>
+<h2 id="user-defined-schemas-and-multi-table-support">User-defined schemas and multi-table support</h2>
+<p>Haskey stores all data in a tree-like structure called a B+-tree, where the nodes are identified by page numbers pointing to pages in the database. Two specially designated fixed pages contain the metadata of the database. The <a href="https://hackage.haskell.org/package/haskey-0.2.0.0/docs/Database-Haskey-Alloc-Concurrent.html#t:ConcurrentMeta"><code class="sourceCode haskell"><span class="dt">ConcurrentMeta</span></code></a> data type holds this metadata. In the previous version of Haskey, the metadata contained one pointer to a B+-tree root, allowing us to only store one tree (also called table) in the database. In the current version, however, the <a href="https://hackage.haskell.org/package/haskey-0.2.0.0/docs/Database-Haskey-Alloc-Concurrent.html#t:ConcurrentMeta"><code class="sourceCode haskell"><span class="dt">ConcurrentMeta</span></code></a> data type is parameterized over a user-defined <code>root</code> type, as can be seen below.</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb1-1" data-line-number="1"><span class="co">-- Simplified data type definition...</span></a>
+<a class="sourceLine" id="cb1-2" data-line-number="2"><span class="kw">data</span> <span class="dt">ConcurrentMeta</span> root <span class="fu">=</span> <span class="dt">ConcurrentMeta</span> {</a>
+<a class="sourceLine" id="cb1-3" data-line-number="3"><span class="ot">    concurrentMetaRevision ::</span> <span class="dt">TxId</span></a>
+<a class="sourceLine" id="cb1-4" data-line-number="4">    <span class="co">-- Some record fields omitted...</span></a>
+<a class="sourceLine" id="cb1-5" data-line-number="5">  ,<span class="ot"> concurrentMetaRoot ::</span> root</a>
+<a class="sourceLine" id="cb1-6" data-line-number="6">    <span class="co">-- Some record fields omitted...</span></a>
+<a class="sourceLine" id="cb1-7" data-line-number="7">  }</a></code></pre></div>
+<p>This user-defined data type will be stored in the metadata and is passed along to and returned by transactions, as can be seen from the type signature of the <a href="https://hackage.haskell.org/package/haskey-0.2.0.0/docs/Database-Haskey-Alloc-Concurrent.html#v:transact"><code class="sourceCode haskell">transact</code></a> and <a href="https://hackage.haskell.org/package/haskey-0.2.0.0/docs/Database-Haskey-Alloc-Concurrent.html#v:transactReadOnly"><code class="sourceCode haskell">transactReadOnly</code></a> functions. As long as our <code>root</code> type is an instance of the <a href="https://hackage.haskell.org/package/haskey-0.2.0.0/docs/Database-Haskey-Alloc-Concurrent.html#t:Root"><code class="sourceCode haskell"><span class="dt">Root</span></code></a> type class, this essentially allows the user to store and manipulate multiple database trees.</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb2-1" data-line-number="1"><span class="ot">transact ::</span> (<span class="dt">MonadIO</span> m, <span class="dt">MonadMask</span> m, <span class="dt">ConcurrentMetaStoreM</span> m, <span class="dt">Root</span> root)</a>
+<a class="sourceLine" id="cb2-2" data-line-number="2">         <span class="ot">=&gt;</span> (forall n<span class="fu">.</span> (<span class="dt">AllocM</span> n, <span class="dt">MonadMask</span> n) <span class="ot">=&gt;</span> root <span class="ot">-&gt;</span> n (<span class="dt">Transaction</span> root a))</a>
+<a class="sourceLine" id="cb2-3" data-line-number="3">         <span class="ot">-&gt;</span> <span class="dt">ConcurrentDb</span> root</a>
+<a class="sourceLine" id="cb2-4" data-line-number="4">         <span class="ot">-&gt;</span> m a</a>
+<a class="sourceLine" id="cb2-5" data-line-number="5"><span class="ot">transactReadOnly ::</span> (<span class="dt">MonadIO</span> m, <span class="dt">MonadMask</span> m, <span class="dt">ConcurrentMetaStoreM</span> m, <span class="dt">Root</span> root)</a>
+<a class="sourceLine" id="cb2-6" data-line-number="6">                 <span class="ot">=&gt;</span> (forall n<span class="fu">.</span> (<span class="dt">AllocReaderM</span> n, <span class="dt">MonadMask</span> n) <span class="ot">=&gt;</span> root <span class="ot">-&gt;</span> n a)</a>
+<a class="sourceLine" id="cb2-7" data-line-number="7">                 <span class="ot">-&gt;</span> <span class="dt">ConcurrentDb</span> root</a>
+<a class="sourceLine" id="cb2-8" data-line-number="8">                 <span class="ot">-&gt;</span> m a</a></code></pre></div>
+<p>The usage of lenses simplifies querying and manipulating a database with a user-defined schema. As can be seen in the full code example in the section below: <a href="#full-code-example">Full code example</a>.</p>
+<h2 id="the-haskeyt-monad-transformer">The HaskeyT monad transformer</h2>
+<p>Furthermore, we’d also like to introduce the new <a href="https://hackage.haskell.org/package/haskey-mtl-0.2.0.0">haskey-mtl</a> library. This library contains the <a href="https://hackage.haskell.org/package/haskey-mtl-0.2.0.0/docs/Control-Monad-Haskey.html#t:HaskeyT"><code class="sourceCode haskell"><span class="dt">HaskeyT</span></code></a> monad transformer, which is an instance of the <a href="https://hackage.haskell.org/package/haskey-mtl-0.2.0.0/docs/Control-Monad-Haskey.html#t:MonadHaskey"><code class="sourceCode haskell"><span class="dt">MonadHaskey</span></code></a> type class, which has the following definition:</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb3-1" data-line-number="1"><span class="kw">class</span> <span class="dt">Monad</span> m <span class="ot">=&gt;</span> <span class="dt">MonadHaskey</span> root m <span class="fu">|</span> m <span class="ot">-&gt;</span> root <span class="kw">where</span></a>
+<a class="sourceLine" id="cb3-2" data-line-number="2"><span class="ot">    transact ::</span> <span class="dt">Root</span> root</a>
+<a class="sourceLine" id="cb3-3" data-line-number="3">             <span class="ot">=&gt;</span> (forall n<span class="fu">.</span> (<span class="dt">AllocM</span> n, <span class="dt">MonadMask</span> n) <span class="ot">=&gt;</span> root <span class="ot">-&gt;</span> n (<span class="dt">Transaction</span> root a))</a>
+<a class="sourceLine" id="cb3-4" data-line-number="4">             <span class="ot">-&gt;</span> m a</a>
+<a class="sourceLine" id="cb3-5" data-line-number="5"></a>
+<a class="sourceLine" id="cb3-6" data-line-number="6"><span class="ot">    transact_ ::</span> <span class="dt">Root</span> root</a>
+<a class="sourceLine" id="cb3-7" data-line-number="7">              <span class="ot">=&gt;</span> (forall n<span class="fu">.</span> (<span class="dt">AllocM</span> n, <span class="dt">MonadMask</span> n) <span class="ot">=&gt;</span> root <span class="ot">-&gt;</span> n (<span class="dt">Transaction</span> root ()))</a>
+<a class="sourceLine" id="cb3-8" data-line-number="8">              <span class="ot">-&gt;</span> m ()</a>
+<a class="sourceLine" id="cb3-9" data-line-number="9"></a>
+<a class="sourceLine" id="cb3-10" data-line-number="10"><span class="ot">    transactReadOnly ::</span> <span class="dt">Root</span> root</a>
+<a class="sourceLine" id="cb3-11" data-line-number="11">                     <span class="ot">=&gt;</span> (forall n<span class="fu">.</span> (<span class="dt">AllocReaderM</span> n, <span class="dt">MonadMask</span> n) <span class="ot">=&gt;</span> root <span class="ot">-&gt;</span> n a)</a>
+<a class="sourceLine" id="cb3-12" data-line-number="12">                     <span class="ot">-&gt;</span> m a</a></code></pre></div>
+<p>The <a href="https://hackage.haskell.org/package/haskey-mtl-0.2.0.0/docs/Control-Monad-Haskey.html#t:HaskeyT"><code class="sourceCode haskell"><span class="dt">HaskeyT</span></code></a> monad transformer essentially allows you to incorporate access to a Haskey database in your application’s monad transformer stack, by using the <a href="https://hackage.haskell.org/package/haskey-mtl-0.2.0.0/docs/Control-Monad-Haskey.html#v:runFileStoreT"><code class="sourceCode haskell">runFileStoreT</code></a> function. Let’s move on to a full code example.</p>
+<h2 id="full-code-example">Full code example</h2>
+<p>In this section we will dissect the example application included with the <a href="https://github.com/haskell-haskey/haskey-mtl">haskey-mtl</a> library, of which the code can be <a href="https://github.com/haskell-haskey/haskey-mtl/tree/master/example">found on GitHub</a>. We will skip the imports and immediately jump to the definition of our application’s monad transformer stack. Our <code class="sourceCode haskell"><span class="dt">App</span></code> monad is built using a <code class="sourceCode haskell"><span class="dt">ReaderT</span></code> and a <code class="sourceCode haskell"><span class="dt">HaskeyT</span></code> and can simply be run using the <code>runApp</code> function.</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb4-1" data-line-number="1"><span class="kw">newtype</span> <span class="dt">App</span> a <span class="fu">=</span> <span class="dt">AppT</span> (<span class="dt">ReaderT</span> <span class="dt">String</span> (<span class="dt">HaskeyT</span> <span class="dt">Schema</span> <span class="dt">IO</span>) a)</a>
+<a class="sourceLine" id="cb4-2" data-line-number="2">              <span class="kw">deriving</span> (<span class="dt">Functor</span>, <span class="dt">Applicative</span>, <span class="dt">Monad</span>, <span class="dt">MonadIO</span>,</a>
+<a class="sourceLine" id="cb4-3" data-line-number="3">                        <span class="dt">MonadHaskey</span> <span class="dt">Schema</span>, <span class="dt">MonadReader</span> <span class="dt">String</span>)</a>
+<a class="sourceLine" id="cb4-4" data-line-number="4"></a>
+<a class="sourceLine" id="cb4-5" data-line-number="5"><span class="ot">runApp ::</span> <span class="dt">App</span> a</a>
+<a class="sourceLine" id="cb4-6" data-line-number="6">       <span class="ot">-&gt;</span> <span class="dt">String</span></a>
+<a class="sourceLine" id="cb4-7" data-line-number="7">       <span class="ot">-&gt;</span> <span class="dt">ConcurrentDb</span> <span class="dt">Schema</span></a>
+<a class="sourceLine" id="cb4-8" data-line-number="8">       <span class="ot">-&gt;</span> <span class="dt">FileStoreConfig</span></a>
+<a class="sourceLine" id="cb4-9" data-line-number="9">       <span class="ot">-&gt;</span> <span class="dt">IO</span> a</a>
+<a class="sourceLine" id="cb4-10" data-line-number="10">runApp (<span class="dt">AppT</span> m) r <span class="fu">=</span> runFileStoreT (runReaderT m r)</a></code></pre></div>
+<p>Let’s now define the <code class="sourceCode haskell"><span class="dt">Schema</span></code> of our database. We will store a collection of tweets, identified by their unique identifier, and a collection of users who have sent out those tweets, in two separate trees. The <code class="sourceCode haskell"><span class="dt">Schema</span></code> data type instantiates the <a href="https://hackage.haskell.org/package/haskey-0.2.0.0/docs/Database-Haskey-Alloc-Concurrent.html#t:Root"><code class="sourceCode haskell"><span class="dt">Root</span></code></a> type class, which allows us to use it as the type parameter to a <a href="https://hackage.haskell.org/package/haskey-0.2.0.0/docs/Database-Haskey-Alloc-Concurrent.html#t:ConcurrentDb"><code class="sourceCode haskell"><span class="dt">ConcurrentDb</span></code></a>. We also define two lenses to access the fields in this data type, called <code class="sourceCode haskell">schemaTweets</code> and <code class="sourceCode haskell">schemaUsers</code>.</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb5-1" data-line-number="1"></a>
+<a class="sourceLine" id="cb5-2" data-line-number="2"><span class="kw">data</span> <span class="dt">Tweet</span> <span class="fu">=</span> <span class="dt">Tweet</span> {</a>
+<a class="sourceLine" id="cb5-3" data-line-number="3"><span class="ot">    tweetUser ::</span> <span class="fu">!</span><span class="dt">Text</span></a>
+<a class="sourceLine" id="cb5-4" data-line-number="4">  ,<span class="ot"> tweetContent ::</span> <span class="fu">!</span><span class="dt">Text</span></a>
+<a class="sourceLine" id="cb5-5" data-line-number="5">  } <span class="kw">deriving</span> (<span class="dt">Generic</span>, <span class="dt">Show</span>, <span class="dt">Typeable</span>)</a>
+<a class="sourceLine" id="cb5-6" data-line-number="6"></a>
+<a class="sourceLine" id="cb5-7" data-line-number="7"><span class="kw">instance</span> <span class="dt">Binary</span> <span class="dt">Tweet</span></a>
+<a class="sourceLine" id="cb5-8" data-line-number="8"><span class="kw">instance</span> <span class="dt">Value</span> <span class="dt">Tweet</span></a>
+<a class="sourceLine" id="cb5-9" data-line-number="9"></a>
+<a class="sourceLine" id="cb5-10" data-line-number="10"><span class="kw">data</span> <span class="dt">User</span> <span class="fu">=</span> <span class="dt">User</span> {</a>
+<a class="sourceLine" id="cb5-11" data-line-number="11"><span class="ot">    userName ::</span> <span class="fu">!</span><span class="dt">Text</span></a>
+<a class="sourceLine" id="cb5-12" data-line-number="12">  ,<span class="ot"> userEmail ::</span> <span class="fu">!</span><span class="dt">Text</span></a>
+<a class="sourceLine" id="cb5-13" data-line-number="13">  } <span class="kw">deriving</span> (<span class="dt">Generic</span>, <span class="dt">Show</span>, <span class="dt">Typeable</span>)</a>
+<a class="sourceLine" id="cb5-14" data-line-number="14"></a>
+<a class="sourceLine" id="cb5-15" data-line-number="15"><span class="kw">instance</span> <span class="dt">Binary</span> <span class="dt">User</span></a>
+<a class="sourceLine" id="cb5-16" data-line-number="16"><span class="kw">instance</span> <span class="dt">Value</span> <span class="dt">User</span></a>
+<a class="sourceLine" id="cb5-17" data-line-number="17"></a>
+<a class="sourceLine" id="cb5-18" data-line-number="18"><span class="kw">data</span> <span class="dt">Schema</span> <span class="fu">=</span> <span class="dt">Schema</span> {</a>
+<a class="sourceLine" id="cb5-19" data-line-number="19"><span class="ot">    _schemaTweets ::</span> <span class="dt">Tree</span> <span class="dt">Int64</span> <span class="dt">Tweet</span></a>
+<a class="sourceLine" id="cb5-20" data-line-number="20">  ,<span class="ot"> _schemaUsers ::</span> <span class="dt">Tree</span> <span class="dt">Text</span> <span class="dt">User</span></a>
+<a class="sourceLine" id="cb5-21" data-line-number="21">  } <span class="kw">deriving</span> (<span class="dt">Generic</span>, <span class="dt">Show</span>, <span class="dt">Typeable</span>)</a>
+<a class="sourceLine" id="cb5-22" data-line-number="22"></a>
+<a class="sourceLine" id="cb5-23" data-line-number="23"><span class="kw">instance</span> <span class="dt">Binary</span> <span class="dt">Schema</span></a>
+<a class="sourceLine" id="cb5-24" data-line-number="24"><span class="kw">instance</span> <span class="dt">Value</span> <span class="dt">Schema</span></a>
+<a class="sourceLine" id="cb5-25" data-line-number="25"><span class="kw">instance</span> <span class="dt">Root</span> <span class="dt">Schema</span></a>
+<a class="sourceLine" id="cb5-26" data-line-number="26"></a>
+<a class="sourceLine" id="cb5-27" data-line-number="27"><span class="ot">emptySchema ::</span> <span class="dt">Schema</span></a>
+<a class="sourceLine" id="cb5-28" data-line-number="28">emptySchema <span class="fu">=</span> <span class="dt">Schema</span> Tree.empty Tree.empty</a>
+<a class="sourceLine" id="cb5-29" data-line-number="29"></a>
+<a class="sourceLine" id="cb5-30" data-line-number="30"><span class="ot">schemaTweets ::</span> <span class="dt">Lens'</span> <span class="dt">Schema</span> (<span class="dt">Tree</span> <span class="dt">Int64</span> <span class="dt">Tweet</span>)</a>
+<a class="sourceLine" id="cb5-31" data-line-number="31">schemaTweets <span class="fu">=</span> lens _schemaTweets <span class="fu">$</span> \s x <span class="ot">-&gt;</span> s { _schemaTweets <span class="fu">=</span> x }</a>
+<a class="sourceLine" id="cb5-32" data-line-number="32"></a>
+<a class="sourceLine" id="cb5-33" data-line-number="33"><span class="ot">schemaUsers ::</span> <span class="dt">Lens'</span> <span class="dt">Schema</span> (<span class="dt">Tree</span> <span class="dt">Text</span> <span class="dt">User</span>)</a>
+<a class="sourceLine" id="cb5-34" data-line-number="34">schemaUsers <span class="fu">=</span> lens _schemaUsers <span class="fu">$</span> \s x <span class="ot">-&gt;</span> s { _schemaUsers <span class="fu">=</span> x }</a></code></pre></div>
+<p>Lenses allow us to very easily query and manipulate trees in our custom schema. We define some functions using lenses to query and manipulate the database. We use functions like <a href="https://hackage.haskell.org/package/haskey-btree-0.2.0.0/docs/Data-BTree-Impure.html#v:insertTree"><code class="sourceCode haskell">insertTree</code></a> and <a href="https://hackage.haskell.org/package/haskey-btree-0.2.0.0/docs/Data-BTree-Impure.html#v:lookupTree"><code class="sourceCode haskell">lookupTree</code></a> from the <a href="https://hackage.haskell.org/package/haskey-btree-0.2.0.0">haskey-btree</a> package to query and modify the underlying B+-trees. These actions run inside an <code>AllocM</code> or <code>AllocReaderM</code> monad which provide read-write and read-only manipulations of the B+-trees. We can use the <code class="sourceCode haskell">transact</code> and <code class="sourceCode haskell">transactReadOnly</code> functions from the <a href="https://hackage.haskell.org/package/haskey-mtl-0.2.0.0/docs/Control-Monad-Haskey.html#t:MonadHaskey"><code class="sourceCode haskell"><span class="dt">MonadHaskey</span></code></a> type class to execute these functions.</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb6-1" data-line-number="1"><span class="co">-- | Insert or update a tweet.</span></a>
+<a class="sourceLine" id="cb6-2" data-line-number="2"><span class="ot">insertTweet ::</span> <span class="dt">AllocM</span> n <span class="ot">=&gt;</span> <span class="dt">Int64</span> <span class="ot">-&gt;</span> <span class="dt">Tweet</span> <span class="ot">-&gt;</span> <span class="dt">Schema</span> <span class="ot">-&gt;</span> n <span class="dt">Schema</span></a>
+<a class="sourceLine" id="cb6-3" data-line-number="3">insertTweet k v <span class="fu">=</span> schemaTweets <span class="fu">%%~</span> insertTree k v</a>
+<a class="sourceLine" id="cb6-4" data-line-number="4"></a>
+<a class="sourceLine" id="cb6-5" data-line-number="5"><span class="co">-- | Query all tweets.</span></a>
+<a class="sourceLine" id="cb6-6" data-line-number="6"><span class="ot">queryAllTweets ::</span> <span class="dt">AllocReaderM</span> n <span class="ot">=&gt;</span> <span class="dt">Schema</span> <span class="ot">-&gt;</span> n [(<span class="dt">Int64</span>, <span class="dt">Tweet</span>)]</a>
+<a class="sourceLine" id="cb6-7" data-line-number="7">queryAllTweets root <span class="fu">=</span> toList (root <span class="fu">^.</span> schemaTweets)</a>
+<a class="sourceLine" id="cb6-8" data-line-number="8"></a>
+<a class="sourceLine" id="cb6-9" data-line-number="9"><span class="co">-- | Query a tweet.</span></a>
+<a class="sourceLine" id="cb6-10" data-line-number="10"><span class="ot">queryTweet ::</span> <span class="dt">AllocReaderM</span> n <span class="ot">=&gt;</span> <span class="dt">Int64</span> <span class="ot">-&gt;</span> <span class="dt">Schema</span> <span class="ot">-&gt;</span> n (<span class="dt">Maybe</span> <span class="dt">Tweet</span>)</a>
+<a class="sourceLine" id="cb6-11" data-line-number="11">queryTweet k root <span class="fu">=</span> lookupTree k (root <span class="fu">^.</span> schemaTweets)</a>
+<a class="sourceLine" id="cb6-12" data-line-number="12"></a>
+<a class="sourceLine" id="cb6-13" data-line-number="13"><span class="co">-- | Insert a new user.</span></a>
+<a class="sourceLine" id="cb6-14" data-line-number="14"><span class="ot">insertUser ::</span> <span class="dt">AllocM</span> n <span class="ot">=&gt;</span> <span class="dt">Text</span> <span class="ot">-&gt;</span> <span class="dt">User</span> <span class="ot">-&gt;</span> <span class="dt">Schema</span> <span class="ot">-&gt;</span> n <span class="dt">Schema</span></a>
+<a class="sourceLine" id="cb6-15" data-line-number="15">insertUser k v <span class="fu">=</span> schemaUsers <span class="fu">%%~</span> insertTree k v</a>
+<a class="sourceLine" id="cb6-16" data-line-number="16"></a>
+<a class="sourceLine" id="cb6-17" data-line-number="17"><span class="co">-- | Query a user.</span></a>
+<a class="sourceLine" id="cb6-18" data-line-number="18"><span class="ot">queryUser ::</span> <span class="dt">AllocReaderM</span> n <span class="ot">=&gt;</span> <span class="dt">Text</span> <span class="ot">-&gt;</span> <span class="dt">Schema</span> <span class="ot">-&gt;</span> n (<span class="dt">Maybe</span> <span class="dt">User</span>)</a>
+<a class="sourceLine" id="cb6-19" data-line-number="19">queryUser userId root <span class="fu">=</span> lookupTree userId (root <span class="fu">^.</span> schemaUsers)</a></code></pre></div>
+<p>We now have all ingredients to write our application using our custom <code class="sourceCode haskell"><span class="dt">App</span></code> monad. Our application simply stores some tweets and users in the database, and then prints them all out to the console.</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb7-1" data-line-number="1"><span class="ot">main ::</span> <span class="dt">IO</span> ()</a>
+<a class="sourceLine" id="cb7-2" data-line-number="2">main <span class="fu">=</span> <span class="kw">do</span></a>
+<a class="sourceLine" id="cb7-3" data-line-number="3">    <span class="kw">let</span> db <span class="fu">=</span> <span class="st">&quot;/tmp/mtl-example.haskey&quot;</span></a>
+<a class="sourceLine" id="cb7-4" data-line-number="4">    putStrLn <span class="fu">$</span> <span class="st">&quot;Using &quot;</span> <span class="fu">++</span> db</a>
+<a class="sourceLine" id="cb7-5" data-line-number="5">    main' db</a>
+<a class="sourceLine" id="cb7-6" data-line-number="6"></a>
+<a class="sourceLine" id="cb7-7" data-line-number="7"><span class="ot">main' ::</span> FilePath <span class="ot">-&gt;</span> <span class="dt">IO</span> ()</a>
+<a class="sourceLine" id="cb7-8" data-line-number="8">main' fp <span class="fu">=</span> <span class="kw">do</span></a>
+<a class="sourceLine" id="cb7-9" data-line-number="9">    db <span class="ot">&lt;-</span> flip runFileStoreT defFileStoreConfig <span class="fu">$</span></a>
+<a class="sourceLine" id="cb7-10" data-line-number="10">        openConcurrentDb hnds <span class="fu">&gt;&gt;=</span> \<span class="kw">case</span></a>
+<a class="sourceLine" id="cb7-11" data-line-number="11">            <span class="dt">Nothing</span> <span class="ot">-&gt;</span> createConcurrentDb hnds emptySchema</a>
+<a class="sourceLine" id="cb7-12" data-line-number="12">            <span class="dt">Just</span> db <span class="ot">-&gt;</span> return db</a>
+<a class="sourceLine" id="cb7-13" data-line-number="13"></a>
+<a class="sourceLine" id="cb7-14" data-line-number="14">    runApp app <span class="st">&quot;Hello World!&quot;</span> db defFileStoreConfig</a>
+<a class="sourceLine" id="cb7-15" data-line-number="15">  <span class="kw">where</span></a>
+<a class="sourceLine" id="cb7-16" data-line-number="16">    hnds <span class="fu">=</span> concurrentHandles fp</a>
+<a class="sourceLine" id="cb7-17" data-line-number="17"></a>
+<a class="sourceLine" id="cb7-18" data-line-number="18"><span class="ot">app ::</span> <span class="dt">App</span> ()</a>
+<a class="sourceLine" id="cb7-19" data-line-number="19">app <span class="fu">=</span> insertDefaultTweets <span class="fu">&gt;&gt;</span> printTweetsWithUser</a>
+<a class="sourceLine" id="cb7-20" data-line-number="20"></a>
+<a class="sourceLine" id="cb7-21" data-line-number="21"><span class="ot">insertDefaultTweets ::</span> <span class="dt">App</span> ()</a>
+<a class="sourceLine" id="cb7-22" data-line-number="22">insertDefaultTweets <span class="fu">=</span> <span class="kw">do</span></a>
+<a class="sourceLine" id="cb7-23" data-line-number="23">    transact_ <span class="fu">$</span> \schema <span class="ot">-&gt;</span></a>
+<a class="sourceLine" id="cb7-24" data-line-number="24">        foldlM (flip <span class="fu">$</span> uncurry insertUser) schema users</a>
+<a class="sourceLine" id="cb7-25" data-line-number="25">        <span class="fu">&gt;&gt;=</span> commit_</a>
+<a class="sourceLine" id="cb7-26" data-line-number="26"></a>
+<a class="sourceLine" id="cb7-27" data-line-number="27">    transact_ <span class="fu">$</span> \schema <span class="ot">-&gt;</span></a>
+<a class="sourceLine" id="cb7-28" data-line-number="28">        foldlM (flip <span class="fu">$</span> uncurry insertTweet) schema tweets</a>
+<a class="sourceLine" id="cb7-29" data-line-number="29">        <span class="fu">&gt;&gt;=</span> commit_</a>
+<a class="sourceLine" id="cb7-30" data-line-number="30">  <span class="kw">where</span></a>
+<a class="sourceLine" id="cb7-31" data-line-number="31">    users <span class="fu">=</span> [(<span class="st">&quot;foo&quot;</span>, <span class="dt">User</span> <span class="st">&quot;Foo&quot;</span> <span class="st">&quot;foo@example.org&quot;</span>),</a>
+<a class="sourceLine" id="cb7-32" data-line-number="32">             (<span class="st">&quot;bar&quot;</span>, <span class="dt">User</span> <span class="st">&quot;Bar&quot;</span> <span class="st">&quot;bar@example.org&quot;</span>)]</a>
+<a class="sourceLine" id="cb7-33" data-line-number="33">    tweets <span class="fu">=</span> [(<span class="dv">1</span>, <span class="dt">Tweet</span> <span class="st">&quot;foo&quot;</span> <span class="st">&quot;Hey, I'm Foo!&quot;</span>),</a>
+<a class="sourceLine" id="cb7-34" data-line-number="34">              (<span class="dv">2</span>, <span class="dt">Tweet</span> <span class="st">&quot;bar&quot;</span> <span class="st">&quot;Hey, I'm Bar!&quot;</span>),</a>
+<a class="sourceLine" id="cb7-35" data-line-number="35">              (<span class="dv">3</span>, <span class="dt">Tweet</span> <span class="st">&quot;foo&quot;</span> <span class="st">&quot;I like you, Bar!&quot;</span>)]</a>
+<a class="sourceLine" id="cb7-36" data-line-number="36"></a>
+<a class="sourceLine" id="cb7-37" data-line-number="37"><span class="ot">printTweetsWithUser ::</span> <span class="dt">App</span> ()</a>
+<a class="sourceLine" id="cb7-38" data-line-number="38">printTweetsWithUser <span class="fu">=</span> <span class="kw">do</span></a>
+<a class="sourceLine" id="cb7-39" data-line-number="39">    tweets <span class="ot">&lt;-</span> map snd <span class="fu">&lt;$&gt;</span> transactReadOnly queryAllTweets</a>
+<a class="sourceLine" id="cb7-40" data-line-number="40">    users  <span class="ot">&lt;-</span> mapM (\t <span class="ot">-&gt;</span> transactReadOnly <span class="fu">$</span> queryUser (tweetUser t)) tweets</a>
+<a class="sourceLine" id="cb7-41" data-line-number="41">    mapM_ print' <span class="fu">$</span> zip users tweets</a>
+<a class="sourceLine" id="cb7-42" data-line-number="42">  <span class="kw">where</span></a>
+<a class="sourceLine" id="cb7-43" data-line-number="43">    print' (<span class="dt">Just</span> user, tweet) <span class="fu">=</span> liftIO <span class="fu">.</span> putStrLn <span class="fu">$</span> unpack (userName user) <span class="fu">++</span> <span class="st">&quot;: &quot;</span> <span class="fu">++</span> unpack (tweetContent tweet)</a>
+<a class="sourceLine" id="cb7-44" data-line-number="44">    print' (<span class="dt">Nothing</span>  , tweet) <span class="fu">=</span> liftIO <span class="fu">.</span> putStrLn <span class="fu">$</span> <span class="st">&quot;?: &quot;</span> <span class="fu">++</span> unpack (tweetContent tweet)</a></code></pre></div>
+<p>We now have a fully working application that uses a Haskey database to store and query information. When we run the application, we get the following output:</p>
+<pre><code>Using /tmp/mtl-example.haskey
+Foo: Hey, I'm Foo!
+Bar: Hey, I'm Bar!
+Foo: I like you, Bar!</code></pre>
+<h2 id="outlook-and-future-work">Outlook and future work</h2>
+<p>This blog post signals the end of my contributions to Haskey as part of the Summer of Haskell 2017 project. However, I hope to keep working on Haskey in the future, albeit to a lesser extent, due to my ongoing studies and other projects I’m planning to take on. It is our hope that the Haskell community will start experimenting with Haskey, report a lot of issues, make feature requests, and guide the future of Haskey, along with <a href="https://github.com/skeuchel">Steven</a> and me. <b>Anyone that is interested in contributing to Haskey can directly contact me for more information.</b></p>
+<p>To give you an idea where Haskey is going, we’d like to give you the current state of affairs and an outlook on future work. Currently, Haskey is ready for serious experimental use. It provides user-defined schemas with multi-table support, concurrent readers and serialized writers, efficient disk space usage, and a monad transformer-based integration into your applications. Haskey is thus ready to be used in your application as a key-value store. However, the focus during this Summer of Haskell was to develop features and stabilize the binary format rather than to work on performance which we hope to address next to make Haskey performant, scalable and competitive against other solutions (with ACID guarantees) like SQLite or LMDB. We want to exploit the fact that Haskey is written in Haskell to gain better integration with Haskell’s runtime system – in particular its I/O and concurrency sub-systems – than solutions written in other languages. We hope this gives our project a competitive advantage.</p>
+<p>In the future we would like to build on Haskey to provide persistence functionality at a similarly high level as <a href="https://hackage.haskell.org/package/acid-state">acid-state</a>. The <a href="https://hackage.haskell.org/package/acid-state">acid-state</a> package is a popular high-level persistence solution which is strikingly simple because it uses a pure Haskell value as the storage and consequently is unbeaten in transparently hiding the persistence layer. However, <a href="https://hackage.haskell.org/package/acid-state">acid-state</a> is an in-memory solution, which only writes logs and checkpoints to disk for durability, and comes therefore with a set of disadvantages. Keeping the state completely in memory is resource intensive and thus limits the scope of <a href="https://hackage.haskell.org/package/acid-state">acid-state</a> to applications which either have a small state or require the state to be in-memory anyway, e.g. because of latency requirements. For applications that have a large historic and inactive data set, but a small active data set, this is a waste of resources. Furthermore, loading the state and saving checkpoints may take a long time, since the complete state needs to be read or written. By building on Haskey we intend to develop a solution for applications with medium to large data sets that do not fit in-memory. Related to this idea are projects like <a href="https://hackage.haskell.org/package/vcache">vcache</a> and <a href="https://hackage.haskell.org/package/muesli">muesli</a> which we hope to either integrate with or learn from.</p>
+<p>Next to a ready-made easy-to-use solution we would also like to provide more customizable functionality to users by exposing internal components of Haskey such as <a href="https://hackage.haskell.org/package/haskey-btree-0.2.0.0">haskey-btree</a>. That way we give users the opportunity to exploit application specific knowledge for optimizations and allow them to make their own trade-offs in terms of consistency and durability in exchange for throughput and latency. In particular in combination with future planned features like write-ahead logs, in-memory and on-disk caches with user-controlled eviction, optimistic concurrency control with user customizable collision resolution, e.g. via CRDTs (without replication), etc. Having Haskey implemented in Haskell makes it easy and efficient to directly integrate user-defined behavior at the algorithmic level.</p>
+</article>
+
+      </section>
+
+      <footer>
+        <p>Blog by Henri Verroken.</p>
+        <p>
+          <small>
+            Site generated by <a href="http://jaspervdj.be/hakyll">Hakyll</a>.
+            Theme adapted from <a href="https://github.com/orderedlist">orderedlist</a>.
+          </small>
+        </p>
+      </footer>
+  </body>
+</html>

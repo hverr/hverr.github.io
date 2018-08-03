@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="x-ua-compatible" content="ie=edge">
+    <meta http-equiv="x-ua-compatible" content="chrome=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Henri's Blog - Posts</title>
+    <link rel="stylesheet" href="./css/default.css" />
+    <link rel="stylesheet" href="./css/syntax.css" />
+    <!--[if lt IE 9]>
+    <script src="//html5shiv.googlecode.com/svn/trunk/html5.js"></script>
+    <![endif]-->
+  </head>
+  <body>
+    <div class="wrapper">
+      <header>
+        <h1><a style="color:black;" href="./">About</a></h1>
+        <p>
+          I'm Henri Verroken, I recently graduated with a Master's degree in
+          Computer Science and Engineering. This blog is mostly about Haskell.
+          Have fun reading!
+        </p>
+        <p>
+          <a href="https://be.linkedin.com/in/hverr"><img src="./images/linkedin.svg" alt="LinkedIn"></a>
+          <a href="https://github.com/hverr"><img src="./images/github.svg" alt="GitHub"></a>
+          <a href="./atom.xml"><img src="./images/rss.svg" alt="RSS"></a>
+        </p>
+        <p>
+          <i>
+            Found something incorrect? Found a typo? Other question or remark?
+            Drop me an email at
+            <script>
+              var u = "henri"; var v = "verroken"; var g = "gmail"; var t = "com";
+              var e = u + v + "@" + g + "." + t;
+              var a = "mail"; var b = "to:";
+              document.write('<a href="' + a + b + e + '">' + e + '</a>');
+            </script>
+          </i>
+        </p>
+      </header>
+
+      <section>
+        <h1>Posts</h1>
+        
+<section>
+  <h2><a style="color:black;" href="./posts/2018-07-30-imperative-programming-in-haskell.html">Making Haskell as fast as C: Imperative programming in Haskell</a></h2>
+  <p>July 30, 2018 - <i>Henri Verroken</i></p>
+  <p><p>Implementing efficient and fast data structures in Haskell is not straightforward. A functional implementation of an abstract data type is often orders of magnitude slower than an imperative solution that provides the same functionality. This blog post compares several implementations of a concrete and relatively simple abstract data type in terms of execution time. Ultimately, we develop an imperative data structure using native Haskell code that is as fast as its C equivalent.</p></p>
+  <p><a href="./posts/2018-07-30-imperative-programming-in-haskell.html">Read more...</a></p>
+</section>
+
+<section>
+  <h2><a style="color:black;" href="./posts/2017-10-02-using-servant-to-orchestrate-lxd-containers.html">Using Servant to orchestrate LXD containers</a></h2>
+  <p>October  2, 2017 - <i>Henri Verroken</i></p>
+  <p><p>The <a href="https://hackage.haskell.org/package/lxd-client">lxd-client</a> package is a client library for the LXD daemon written in Haskell. It provides a high-level Haskell interface to communicate with the LXD daemon, which allows you to launch and configure VM-like containers, create images, manage networks and volumes, and many other things. This blog post explains how the <a href="https://haskell-servant.github.io/">servant</a> libraries are used to create a non-trivial type-safe HTTP/WebSockets client and discusses the efforts involved.</p></p>
+  <p><a href="./posts/2017-10-02-using-servant-to-orchestrate-lxd-containers.html">Read more...</a></p>
+</section>
+
+<section>
+  <h2><a style="color:black;" href="./posts/2017-09-14-haskey-user-defined-schemas-and-monad-transformers.html">Haskey: User-defined Schemas, Monad Transformers and Future Work (Summer of Haskell 2017)</a></h2>
+  <p>September 14, 2017 - <i>Henri Verroken and Steven Keuchel</i></p>
+  <p><p>In this blog post we present the features we’ve added to <a href="https://github.com/haskell-haskey">Haskey</a> during the last weeks of the <a href="https://summer.haskell.org/news/2017-05-24-accepted-projects.html">Summer of Haskell project</a>. These features include user-defined schemas, multi-table support and a monad transformer that supports Haskey transactions. They are vital for the usability of Haskey, which means Haskey can finally be experimentally incorporated in serious projects. We also believe that the inclusion of these features provide the necessary functionality for Haskey to be a successful project in the context of <a href="https://summer.haskell.org/news/2017-05-24-accepted-projects.html">Summer of Haskell 2017</a>.</p></p>
+  <p><a href="./posts/2017-09-14-haskey-user-defined-schemas-and-monad-transformers.html">Read more...</a></p>
+</section>
+
+<section>
+  <h2><a style="color:black;" href="./posts/2017-08-24-introducing-haskey.html">Introducing Haskey (Summer of Haskell 2017)</a></h2>
+  <p>August 24, 2017 - <i>Henri Verroken</i></p>
+  <p><p>This blog post introduces the <a href="https://github.com/haskell-haskey">Haskey project</a>, an ACID compliant embedded key-value store entirely written in Haskell, based on an MVCC B+-tree implementation. It was developed as part of the <a href="https://summer.haskell.org/news/2017-05-24-accepted-projects.html">Summer of Haskell 2017</a>. We will take a look at two libraries that we wrote this summer.</p></p>
+  <p><a href="./posts/2017-08-24-introducing-haskey.html">Read more...</a></p>
+</section>
+
+
+
+      </section>
+
+      <footer>
+        <p>Blog by Henri Verroken.</p>
+        <p>
+          <small>
+            Site generated by <a href="http://jaspervdj.be/hakyll">Hakyll</a>.
+            Theme adapted from <a href="https://github.com/orderedlist">orderedlist</a>.
+          </small>
+        </p>
+      </footer>
+  </body>
+</html>

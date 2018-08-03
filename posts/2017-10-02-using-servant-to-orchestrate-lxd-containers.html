@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="x-ua-compatible" content="ie=edge">
+    <meta http-equiv="x-ua-compatible" content="chrome=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Henri's Blog - Using Servant to orchestrate LXD containers</title>
+    <link rel="stylesheet" href="../css/default.css" />
+    <link rel="stylesheet" href="../css/syntax.css" />
+    <!--[if lt IE 9]>
+    <script src="//html5shiv.googlecode.com/svn/trunk/html5.js"></script>
+    <![endif]-->
+  </head>
+  <body>
+    <div class="wrapper">
+      <header>
+        <h1><a style="color:black;" href="../">About</a></h1>
+        <p>
+          I'm Henri Verroken, I recently graduated with a Master's degree in
+          Computer Science and Engineering. This blog is mostly about Haskell.
+          Have fun reading!
+        </p>
+        <p>
+          <a href="https://be.linkedin.com/in/hverr"><img src="../images/linkedin.svg" alt="LinkedIn"></a>
+          <a href="https://github.com/hverr"><img src="../images/github.svg" alt="GitHub"></a>
+          <a href="../atom.xml"><img src="../images/rss.svg" alt="RSS"></a>
+        </p>
+        <p>
+          <i>
+            Found something incorrect? Found a typo? Other question or remark?
+            Drop me an email at
+            <script>
+              var u = "henri"; var v = "verroken"; var g = "gmail"; var t = "com";
+              var e = u + v + "@" + g + "." + t;
+              var a = "mail"; var b = "to:";
+              document.write('<a href="' + a + b + e + '">' + e + '</a>');
+            </script>
+          </i>
+        </p>
+      </header>
+
+      <section>
+        <h1>Using Servant to orchestrate LXD containers</h1>
+        <p>Posted on October  2, 2017  - <a href="https://www.reddit.com/r/haskell/comments/758c7u/using_servant_to_orchestrate_lxd_containers/?ref=share&ref_source=link">Discussion</a>  - <a href="../">All posts</a></p>
+<p><i>By Henri Verroken</i></p>
+<article>
+  <p>The <a href="https://hackage.haskell.org/package/lxd-client">lxd-client</a> package is a client library for the LXD daemon written in Haskell. It provides a high-level Haskell interface to communicate with the LXD daemon, which allows you to launch and configure VM-like containers, create images, manage networks and volumes, and many other things. This blog post explains how the <a href="https://haskell-servant.github.io/">servant</a> libraries are used to create a non-trivial type-safe HTTP/WebSockets client and discusses the efforts involved.</p>
+<!--more-->
+<h2 id="what-is-lxd">What is LXD?</h2>
+<p>LXD is a container manager, which uses LXC under the hood. It offers a user experience similar to a virtual machine hypervisor but uses Linux containers to provide the isolation. LXD exposes a REST API over a local unix socket and over HTTPS, allowing any type of client to manage containers, images and other configuration objects. <a href="https://linuxcontainers.org/lxd/introduction/">LXD’s home page</a> provides more information and excellent tutorials.</p>
+<p>Some of the more important features of LXD are listed below, directly taken from <a href="https://linuxcontainers.org/lxd/introduction/">LXD’s home page</a>:</p>
+<ul>
+<li>Image based, with a variety of Linux distributions published daily.</li>
+<li>Support for cross-host container and image transfer, including live migration.</li>
+<li>Advanced resource control for cpu, memory, network I/O, block I/O, disk usage and kernel resources.</li>
+<li>Device passthrough for USB, GPU, unix character and block devices, NICs, disks and paths.</li>
+<li>Network management</li>
+<li>Storage management with support for multiple storage backends, pools and volumes.</li>
+</ul>
+<h2 id="building-a-haskell-client">Building a Haskell client</h2>
+<p>The LXD daemon exposes a REST-like API that allows you to fully manage all LXD resources. A standard command line utility is provided to manage LXD daemons, but the <a href="https://hackage.haskell.org/package/lxd-client">lxd-client</a> package allows you to go beyond the command line interface. Using the package, you can leverage the power of Haskell when orchestrating LXD containers, both on a local host and on remote hosts.</p>
+<p>This blog post discusses how the <a href="https://hackage.haskell.org/package/lxd-client">lxd-client</a> package leverages Servant to quickly build a type-safe low-level interface for the LXD API. This low-level interface is actually wrapped by a high-level interface. A code example showing off the final product can be found below. The high-level interface won’t be discussed any further, but the <a href="https://hackage.haskell.org/package/lxd-client-0.1.0.2/docs/Network-LXD-Client-Commands.html">Haddock documentation</a> provides an overview on how to start using the high-level interface.</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb1-1" data-line-number="1"><span class="ot">{-# LANGUAGE OverloadedStrings #-}</span></a>
+<a class="sourceLine" id="cb1-2" data-line-number="2"><span class="kw">module</span> <span class="dt">Main</span> <span class="kw">where</span></a>
+<a class="sourceLine" id="cb1-3" data-line-number="3"></a>
+<a class="sourceLine" id="cb1-4" data-line-number="4"><span class="kw">import</span> <span class="dt">Control.Monad.IO.Class</span> (liftIO)</a>
+<a class="sourceLine" id="cb1-5" data-line-number="5"><span class="kw">import</span> <span class="dt">Network.LXD.Client.Commands</span></a>
+<a class="sourceLine" id="cb1-6" data-line-number="6"></a>
+<a class="sourceLine" id="cb1-7" data-line-number="7"><span class="ot">main ::</span> <span class="dt">IO</span> ()</a>
+<a class="sourceLine" id="cb1-8" data-line-number="8">main <span class="fu">=</span> runWithLocalHost def <span class="fu">$</span> <span class="kw">do</span></a>
+<a class="sourceLine" id="cb1-9" data-line-number="9">    liftIO <span class="fu">$</span> putStrLn <span class="st">&quot;Creating my-container&quot;</span></a>
+<a class="sourceLine" id="cb1-10" data-line-number="10">    lxcCreate <span class="fu">.</span> containerCreateRequest <span class="st">&quot;my-container&quot;</span></a>
+<a class="sourceLine" id="cb1-11" data-line-number="11">              <span class="fu">.</span> <span class="dt">ContainerSourceRemote</span></a>
+<a class="sourceLine" id="cb1-12" data-line-number="12">              <span class="fu">$</span> remoteImage imagesRemote <span class="st">&quot;ubuntu/xenial/amd64&quot;</span></a>
+<a class="sourceLine" id="cb1-13" data-line-number="13"></a>
+<a class="sourceLine" id="cb1-14" data-line-number="14">    liftIO <span class="fu">$</span> putStrLn <span class="st">&quot;Starting my-container&quot;</span></a>
+<a class="sourceLine" id="cb1-15" data-line-number="15">    lxcStart <span class="st">&quot;my-container&quot;</span></a>
+<a class="sourceLine" id="cb1-16" data-line-number="16"></a>
+<a class="sourceLine" id="cb1-17" data-line-number="17">    liftIO <span class="fu">$</span> putStrLn <span class="st">&quot;Stopping my-container&quot;</span></a>
+<a class="sourceLine" id="cb1-18" data-line-number="18">    lxcStop <span class="st">&quot;my-container&quot;</span> <span class="dt">False</span></a>
+<a class="sourceLine" id="cb1-19" data-line-number="19"></a>
+<a class="sourceLine" id="cb1-20" data-line-number="20">    liftIO <span class="fu">$</span> putStrLn <span class="st">&quot;Deleting my-container&quot;</span></a>
+<a class="sourceLine" id="cb1-21" data-line-number="21">    lxcDelete <span class="st">&quot;my-container&quot;</span></a></code></pre></div>
+<h2 id="leveraging-servant-to-rapidly-describe-a-large-api.">Leveraging Servant to rapidly describe a large API.</h2>
+<p>The LXD REST API is quite big, yet well structured, and rather well <a href="https://github.com/lxc/lxd/blob/master/doc/rest-api.md">documented on GitHub</a>. The API exposes quite a lot of <a href="https://github.com/lxc/lxd/blob/master/doc/rest-api.md#api-structure">endpoints</a>, of which some are listed below.</p>
+<pre><code>/1.0
++-- /1.0/certificates
+|   +-- /1.0/certificates/&lt;fingerprint&gt;
++-- /1.0/containers
+|   +-- /1.0/containers/&lt;name&gt;
+|       +-- /1.0/containers/&lt;name&gt;/exec
+|       +-- /1.0/containers/&lt;name&gt;/files
+|       +-- /1.0/containers/&lt;name&gt;/state
+|       +-- ...
++ -- /1.0/events
++ -- /1.0/images
+|    +-- /1.0/images/&lt;fingerprint&gt;
+|    |   +-- /1.0/images/&lt;fingerprint&gt;/export
+|    |   +-- /1.0/images/&lt;fingerprint&gt;/refresh
+|    +  /1.0/images/aliases
+|       + -- /1.0/images/aliases/&lt;name&gt;
++ ...</code></pre>
+<p><a href="https://haskell-servant.github.io/">Servant</a> is a type-level DSL for describing both server and client APIs using Haskell types. By specifying the API at the type-level, Servant takes a way a lot of the boilerplate you’d otherwise have to write manually. It handles encoding and dispatching requests, as well as receiving and properly decoding responses, using your custom JSON-enabled types. An <a href="https://haskell-servant.github.io/client-in-5-minutes.html">excellent tutorial</a> is provided by Servant itself.</p>
+<h3 id="lxd-api-responses">LXD API responses</h3>
+<p>Let’s start by describing the <a href="https://github.com/lxc/lxd/blob/master/doc/rest-api.md#return-values">response objects returned by the LXD API</a>. Each endpoint replies with either a synchronous or an asynchronous response object. A synchronous response immediately returns the requested information, while an asynchronous response first starts an operation in the background and returns an operation ID, which can be used to track its progress.</p>
+<p>We’ll define a data type <a href="https://hackage.haskell.org/package/lxd-client-0.1.0.2/docs/Network-LXD-Client-Types.html#t:GenericResponse"><code class="sourceCode haskell"><span class="dt">GenericResponse</span></code></a> to describe both response types, which happen to share a lot of fields. It has two type parameters: <code>op</code> describes the operation ID of the response, while <code>a</code> describes the actual data returned by the request.</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb3-1" data-line-number="1"><span class="co">-- | Generic LXD API response object.</span></a>
+<a class="sourceLine" id="cb3-2" data-line-number="2"><span class="kw">data</span> <span class="dt">GenericResponse</span> op a <span class="fu">=</span> <span class="dt">Response</span> {</a>
+<a class="sourceLine" id="cb3-3" data-line-number="3"><span class="ot">    responseType ::</span> <span class="dt">ResponseType</span></a>
+<a class="sourceLine" id="cb3-4" data-line-number="4">  ,<span class="ot"> status ::</span> <span class="dt">String</span></a>
+<a class="sourceLine" id="cb3-5" data-line-number="5">  ,<span class="ot"> statusCode ::</span> <span class="dt">StatusCode</span></a>
+<a class="sourceLine" id="cb3-6" data-line-number="6">  ,<span class="ot"> responseOperation ::</span> op</a>
+<a class="sourceLine" id="cb3-7" data-line-number="7">  ,<span class="ot"> errorCode ::</span> <span class="dt">Int</span></a>
+<a class="sourceLine" id="cb3-8" data-line-number="8">  ,<span class="ot"> error ::</span> <span class="dt">String</span></a>
+<a class="sourceLine" id="cb3-9" data-line-number="9">  ,<span class="ot"> metadata ::</span> a</a>
+<a class="sourceLine" id="cb3-10" data-line-number="10">} <span class="kw">deriving</span> (<span class="dt">Show</span>)</a>
+<a class="sourceLine" id="cb3-11" data-line-number="11"></a>
+<a class="sourceLine" id="cb3-12" data-line-number="12"><span class="kw">instance</span> (<span class="dt">FromJSON</span> op, <span class="dt">FromJSON</span> a) <span class="ot">=&gt;</span> <span class="dt">FromJSON</span> (<span class="dt">GenericResponse</span> op a) <span class="kw">where</span></a>
+<a class="sourceLine" id="cb3-13" data-line-number="13">    parseJSON <span class="fu">=</span> withObject <span class="st">&quot;Response&quot;</span> <span class="fu">$</span> \v <span class="ot">-&gt;</span> <span class="dt">Response</span></a>
+<a class="sourceLine" id="cb3-14" data-line-number="14">        <span class="fu">&lt;$&gt;</span> v <span class="fu">.:</span> <span class="st">&quot;type&quot;</span> <span class="fu">&lt;*&gt;</span> v <span class="fu">.:</span> <span class="st">&quot;status&quot;</span> <span class="fu">&lt;*&gt;</span> v <span class="fu">.:</span> <span class="st">&quot;status_code&quot;</span></a>
+<a class="sourceLine" id="cb3-15" data-line-number="15">        <span class="fu">&lt;*&gt;</span> v <span class="fu">.:</span> <span class="st">&quot;operation&quot;</span> <span class="fu">&lt;*&gt;</span> v <span class="fu">.:</span> <span class="st">&quot;error_code&quot;</span> <span class="fu">&lt;*&gt;</span> v <span class="fu">.:</span> <span class="st">&quot;error&quot;</span></a>
+<a class="sourceLine" id="cb3-16" data-line-number="16">        <span class="fu">&lt;*&gt;</span> v <span class="fu">.:</span> <span class="st">&quot;metadata&quot;</span></a></code></pre></div>
+<p>A synchronous <a href="https://hackage.haskell.org/package/lxd-client-0.1.0.2/docs/Network-LXD-Client-Types.html#t:Response"><code class="sourceCode haskell"><span class="dt">Response</span></code></a> is a generic response without an operation ID and user-specified return data. An <a href="https://hackage.haskell.org/package/lxd-client-0.1.0.2/docs/Network-LXD-Client-Types.html#t:AsyncResponse"><code class="sourceCode haskell"><span class="dt">AsyncResponse</span></code></a> is a generic response with an operation ID of type <a href="https://hackage.haskell.org/package/lxd-client-0.1.0.2/docs/Network-LXD-Client-Types.html#t:OperationId"><code class="sourceCode haskell"><span class="dt">OperationId</span></code></a>. Its return data contains more information about the operation, described by the <a href="https://hackage.haskell.org/package/lxd-client-0.1.0.2/docs/Network-LXD-Client-Types.html#t:BackgroundOperation"><code class="sourceCode haskell"><span class="dt">BackgroundOperation</span></code></a> data type.</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb4-1" data-line-number="1"><span class="co">-- | LXD API synchronous response object, without resulting operation.</span></a>
+<a class="sourceLine" id="cb4-2" data-line-number="2"><span class="kw">type</span> <span class="dt">Response</span> a <span class="fu">=</span> <span class="dt">GenericResponse</span> <span class="dt">String</span> a</a>
+<a class="sourceLine" id="cb4-3" data-line-number="3"></a>
+<a class="sourceLine" id="cb4-4" data-line-number="4"><span class="co">-- | LXD API asynchronous response object, with resulting operation</span></a>
+<a class="sourceLine" id="cb4-5" data-line-number="5"><span class="kw">type</span> <span class="dt">AsyncResponse</span> a <span class="fu">=</span> <span class="dt">GenericResponse</span> <span class="dt">OperationId</span> (<span class="dt">BackgroundOperation</span> a)</a></code></pre></div>
+<h3 id="our-first-endpoint">Our first endpoint</h3>
+<p>We almost have enough types to specify the <code>/1.0/containers</code> endpoint. This endpoint simply returns a list of existing containers, like this:</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode json"><code class="sourceCode json"><a class="sourceLine" id="cb5-1" data-line-number="1"><span class="ot">[</span></a>
+<a class="sourceLine" id="cb5-2" data-line-number="2">    <span class="st">&quot;/1.0/containers/blah&quot;</span><span class="ot">,</span></a>
+<a class="sourceLine" id="cb5-3" data-line-number="3">    <span class="st">&quot;/1.0/containers/blah1&quot;</span></a>
+<a class="sourceLine" id="cb5-4" data-line-number="4"><span class="ot">]</span></a></code></pre></div>
+<p>We declare a convenience type <a href="https://hackage.haskell.org/package/lxd-client-0.1.0.2/docs/Network-LXD-Client-Types.html#t:ContainerName"><code class="sourceCode haskell"><span class="dt">ContainerName</span></code></a> that extracts the container name by newtype-wrapping a string.</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb6-1" data-line-number="1"><span class="co">-- | LXD container name.</span></a>
+<a class="sourceLine" id="cb6-2" data-line-number="2"><span class="kw">newtype</span> <span class="dt">ContainerName</span> <span class="fu">=</span> <span class="dt">ContainerName</span> <span class="dt">String</span> <span class="kw">deriving</span> (<span class="dt">Eq</span>, <span class="dt">Show</span>)</a>
+<a class="sourceLine" id="cb6-3" data-line-number="3"></a>
+<a class="sourceLine" id="cb6-4" data-line-number="4"><span class="kw">instance</span> <span class="dt">FromJSON</span> <span class="dt">ContainerName</span> <span class="kw">where</span></a>
+<a class="sourceLine" id="cb6-5" data-line-number="5">    parseJSON <span class="fu">=</span> withText <span class="st">&quot;ContainerName&quot;</span> <span class="fu">$</span> \text <span class="ot">-&gt;</span></a>
+<a class="sourceLine" id="cb6-6" data-line-number="6">        <span class="kw">let</span> prefix <span class="fu">=</span> <span class="st">&quot;/1.0/containers/&quot;</span> <span class="kw">in</span></a>
+<a class="sourceLine" id="cb6-7" data-line-number="7">        <span class="kw">case</span> stripPrefix prefix (unpack text) <span class="kw">of</span></a>
+<a class="sourceLine" id="cb6-8" data-line-number="8">            <span class="dt">Nothing</span> <span class="ot">-&gt;</span> fail <span class="fu">$</span> <span class="st">&quot;could not parse container name: no prefix &quot;</span> <span class="fu">++</span> prefix</a>
+<a class="sourceLine" id="cb6-9" data-line-number="9">            <span class="dt">Just</span> name <span class="ot">-&gt;</span> return <span class="fu">$</span> <span class="dt">ContainerName</span> name</a>
+<a class="sourceLine" id="cb6-10" data-line-number="10"></a>
+<a class="sourceLine" id="cb6-11" data-line-number="11"><span class="kw">instance</span> <span class="dt">ToJSON</span> <span class="dt">ContainerName</span>        <span class="kw">where</span> toJSON (<span class="dt">ContainerName</span> name) <span class="fu">=</span> toJSON name</a>
+<a class="sourceLine" id="cb6-12" data-line-number="12"><span class="kw">instance</span> <span class="dt">IsString</span> <span class="dt">ContainerName</span>      <span class="kw">where</span> fromString <span class="fu">=</span> <span class="dt">ContainerName</span></a>
+<a class="sourceLine" id="cb6-13" data-line-number="13"><span class="kw">instance</span> <span class="dt">ToHttpApiData</span> <span class="dt">ContainerName</span> <span class="kw">where</span> toUrlPiece (<span class="dt">ContainerName</span> name) <span class="fu">=</span> pack name</a></code></pre></div>
+<p>We can now describe our first endpoint using the Servant type-level DSL. Quickly adding a <a href="https://hackage.haskell.org/package/lxd-client-0.1.0.2/docs/Network-LXD-Client-Types.html#t:Container"><code class="sourceCode haskell"><span class="dt">Container</span></code></a> data type allows us to also query the <code>/1.0/containers/&lt;name&gt;</code> endpoint, which provides information about the specified container.</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb7-1" data-line-number="1"><span class="kw">type</span> <span class="dt">API</span> <span class="fu">=</span> <span class="st">&quot;1.0&quot;</span> <span class="fu">:&gt;</span> <span class="st">&quot;containers&quot;</span> <span class="fu">:&gt;</span> <span class="dt">Get</span> <span class="ch">'[JSON] (Response [ContainerName])</span></a>
+<a class="sourceLine" id="cb7-2" data-line-number="2">      <span class="fu">:&lt;|&gt;</span> <span class="st">&quot;1.0&quot;</span> <span class="fu">:&gt;</span> <span class="st">&quot;containers&quot;</span> <span class="fu">:&gt;</span> <span class="dt">Capture</span> <span class="st">&quot;name&quot;</span> <span class="dt">ContainerName</span> <span class="fu">:&gt;</span> <span class="dt">Get</span> <span class="ch">'[JSON] (Response Container)</span></a></code></pre></div>
+<p>Path components are separated by the <code class="sourceCode haskell"><span class="fu">:&gt;</span></code> operator, while constant symbols like <code class="sourceCode haskell"><span class="st">&quot;1.0&quot;</span></code> and <code class="sourceCode haskell"><span class="st">&quot;containers&quot;</span></code> specify fixed path components. <code class="sourceCode haskell"><span class="dt">Capture</span></code> captures a variable path component, while <code class="sourceCode haskell"><span class="dt">Get</span></code> describes the structure of the response. In our case the response content type is JSON, which should be deserialized in a synchronous <a href="https://hackage.haskell.org/package/lxd-client-0.1.0.2/docs/Network-LXD-Client-Types.html#t:Response"><code class="sourceCode haskell"><span class="dt">Response</span></code></a> object.</p>
+<h3 id="other-endpoints">Other endpoints</h3>
+<p>As we have seen in the previous section, we only need to declare suitable data types and <code class="sourceCode haskell"><span class="dt">FromJSON</span></code> and <code class="sourceCode haskell"><span class="dt">ToJSON</span></code> instances to describe an API endpoint. For the LXD endpoint all data types are implemented in the <a href="https://hackage.haskell.org/package/lxd-client-0.1.0.2/docs/Network-LXD-Client-Types.html">Network.LXD.Client.Types</a> module, while the full <code class="sourceCode haskell"><span class="dt">API</span></code> is declared in the <a href="https://github.com/hverr/haskell-lxd-client/blob/3802b789bee3b4ccf505febdc9b282e07fd97d65/src/Network/LXD/Client/API.hs#L127">Network.LXD.Client.API</a> module.</p>
+<p>Following these links, you’ll see that a lot of types and a lot of Servant endpoint specifications are needed to describe the full LXD API. This task is <b>quite repetitive, yet it is very robust against errors</b> and allows you to <b>quickly</b> and more importantly <b>correctly describe a large REST-like API</b>.</p>
+<h2 id="querying-the-servant-api.">Querying the Servant API.</h2>
+<p>The <code class="sourceCode haskell"><span class="dt">API</span></code> type we declared earlier, successfully describes the LXD daemon API. But now, we also want to query it. Luckily, the Servant project also includes the <a href="https://hackage.haskell.org/package/servant-client">servant-client</a> library. This library can automatically generate regular Haskell functions from our <code class="sourceCode haskell"><span class="dt">API</span></code> type.</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb8-1" data-line-number="1"><span class="ot">api ::</span> <span class="dt">Proxy</span> <span class="dt">API</span></a>
+<a class="sourceLine" id="cb8-2" data-line-number="2">api <span class="fu">=</span> <span class="dt">Proxy</span></a>
+<a class="sourceLine" id="cb8-3" data-line-number="3"></a>
+<a class="sourceLine" id="cb8-4" data-line-number="4"><span class="ot">containerNames ::</span> <span class="dt">ClientM</span> (<span class="dt">Response</span> [<span class="dt">ContainerName</span>])</a>
+<a class="sourceLine" id="cb8-5" data-line-number="5"><span class="ot">container      ::</span> <span class="dt">ContainerName</span> <span class="ot">-&gt;</span> <span class="dt">ClientM</span> (<span class="dt">Response</span> <span class="dt">Container</span>)</a>
+<a class="sourceLine" id="cb8-6" data-line-number="6"></a>
+<a class="sourceLine" id="cb8-7" data-line-number="7">containerNames <span class="fu">:&lt;|&gt;</span> container <span class="fu">=</span> client api</a></code></pre></div>
+<p>We declare two functions <code class="sourceCode haskell">containerNames</code> and <code class="sourceCode haskell">container</code>, of which the type signatures closely resemble the Servant specification of the API endpoint. Their definition is provided by the <a href="https://hackage.haskell.org/package/servant-client-0.11/docs/Servant-Client.html#v:client"><code class="sourceCode haskell">client</code></a> function provided by the <a href="https://hackage.haskell.org/package/servant-client">servant-client</a> library. It simply takes a proxy of our <code class="sourceCode haskell"><span class="dt">API</span></code> type, and automatically provides an implementation for our functions. In reality the list of functions is of course <a href="https://github.com/hverr/haskell-lxd-client/blob/3802b789bee3b4ccf505febdc9b282e07fd97d65/src/Network/LXD/Client/API.hs#L178">quite a bit longer</a>.</p>
+<p>The <code class="sourceCode haskell">containerNames</code> and <code class="sourceCode haskell">container</code> functions, return a result in the <a href="https://hackage.haskell.org/package/servant-client-0.11/docs/Servant-Client.html#t:ClientM"><code class="sourceCode haskell"><span class="dt">ClientM</span></code></a> monad. You can run these functions by using <a href="https://hackage.haskell.org/package/servant-client-0.11/docs/Servant-Client.html#v:runClientM"><code class="sourceCode haskell">runClientM</code></a>.</p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb9-1" data-line-number="1"><span class="ot">runClientM ::</span> <span class="dt">ClientM</span> a <span class="ot">-&gt;</span> <span class="dt">ClientEnv</span> <span class="ot">-&gt;</span> <span class="dt">IO</span> (<span class="dt">Either</span> <span class="dt">ServantError</span> a)</a>
+<a class="sourceLine" id="cb9-2" data-line-number="2">runClientM <span class="fu">=</span> <span class="fu">...</span></a>
+<a class="sourceLine" id="cb9-3" data-line-number="3"></a>
+<a class="sourceLine" id="cb9-4" data-line-number="4">main <span class="fu">=</span> <span class="kw">do</span></a>
+<a class="sourceLine" id="cb9-5" data-line-number="5">  response <span class="ot">&lt;-</span> runClientM containerNames myEnv</a>
+<a class="sourceLine" id="cb9-6" data-line-number="6">  print response</a></code></pre></div>
+<h2 id="connecting-to-the-lxd-instance.">Connecting to the LXD instance.</h2>
+<p>Servant allows you to describe the API itself, but not how to connect to the API endpoint. As you can see in the previous example, the <a href="https://hackage.haskell.org/package/servant-client-0.11/docs/Servant-Client.html#v:runClientM"><code class="sourceCode haskell">runClientM</code></a> function takes a <a href="https://hackage.haskell.org/package/servant-client-0.11/docs/Servant-Client.html#t:ClientEnv"><code class="sourceCode haskell"><span class="dt">ClientEnv</span></code></a> object, which takes a base URL and a HTTP connection <a href="https://hackage.haskell.org/package/http-client-0.5.6.1/docs/N"><code class="sourceCode haskell"><span class="dt">Manager</span></code></a> from the <a href="https://hackage.haskell.org/package/http-client-0.5.6.1/docs/Network-HTTP-Client.html">Network.HTTP.Client</a> module.</p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb10-1" data-line-number="1"><span class="kw">data</span> <span class="dt">ClientEnv</span> <span class="fu">=</span> <span class="dt">ClientEnv</span> {<span class="ot"> manager ::</span> <span class="dt">Manager</span></a>
+<a class="sourceLine" id="cb10-2" data-line-number="2">                           ,<span class="ot"> baseUrl ::</span> <span class="dt">BaseUrl</span> }</a></code></pre></div>
+<p>Convenience functions exist to create managers for standard HTTP and HTTPS clients, but LXD uses either unix sockets or self-signed HTTPS with public key client authentication. This requires us to construct a custom <a href="https://hackage.haskell.org/package/http-client-0.5.6.1/docs/N"><code class="sourceCode haskell"><span class="dt">Manager</span></code></a> from low-level building blocks.</p>
+<p>The <a href="https://hackage.haskell.org/package/lxd-client-0.1.0.2/docs/Network-LXD-Client.html">Network.LXD.Client</a> module can be used to construct these custom <a href="https://hackage.haskell.org/package/http-client-0.5.6.1/docs/N"><code class="sourceCode haskell"><span class="dt">Manager</span></code></a>s to connect to local and remote LXD instances, providing the correct client certificates for authentication and verifying the self-signed LXD HTTPS certificates.</p>
+<p>The <a href="https://hackage.haskell.org/package/lxd-client-0.1.0.2/docs/Network-LXD-Client.html#v:localHostClient"><code class="sourceCode haskell">localHostClient</code></a> and <a href="https://hackage.haskell.org/package/lxd-client-0.1.0.2/docs/Network-LXD-Client.html#v:remoteHostClient"><code class="sourceCode haskell">remoteHostClient</code></a> functions return appropriate <a href="https://hackage.haskell.org/package/servant-client-0.11/docs/Servant-Client.html#t:ClientEnv"><code class="sourceCode haskell"><span class="dt">ClientEnv</span></code></a> objects. If you require a high level of control on how Servant-enabled client connections are established, the source of the <a href="https://hackage.haskell.org/package/lxd-client-0.1.0.2/docs/Network-LXD-Client.html">Network.LXD.Client</a> might be of interest to you.</p>
+<h2 id="conclusion">Conclusion</h2>
+<p>Servant is an excellent tool to quickly build a robust client for a REST-like API. It consists of three phases:</p>
+<ol type="1">
+<li>Implementing the necessary data types that describe the information content of the API.</li>
+<li>Describe the endpoints and declare function signatures using those data types and the Servant type-level DSL.</li>
+<li>Provide functions that allow Servant to actually connect to the API endpoints using a suitable transport layer protocol.</li>
+</ol>
+<p>The result is a robust, easy-to-use and type-safe client, that can be used to safely interact with the API. Of course, many APIs will not only use plain HTTP requests for interaction. For example, connections to some LXD API endpoints are upgraded to a WebSockets connection. Servant is not capable of interacting with these endpoints, requiring custom application logic, but this is out of scope for this blog post.</p>
+</article>
+
+      </section>
+
+      <footer>
+        <p>Blog by Henri Verroken.</p>
+        <p>
+          <small>
+            Site generated by <a href="http://jaspervdj.be/hakyll">Hakyll</a>.
+            Theme adapted from <a href="https://github.com/orderedlist">orderedlist</a>.
+          </small>
+        </p>
+      </footer>
+  </body>
+</html>

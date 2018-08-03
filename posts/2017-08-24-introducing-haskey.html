@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="x-ua-compatible" content="ie=edge">
+    <meta http-equiv="x-ua-compatible" content="chrome=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Henri's Blog - Introducing Haskey (Summer of Haskell 2017)</title>
+    <link rel="stylesheet" href="../css/default.css" />
+    <link rel="stylesheet" href="../css/syntax.css" />
+    <!--[if lt IE 9]>
+    <script src="//html5shiv.googlecode.com/svn/trunk/html5.js"></script>
+    <![endif]-->
+  </head>
+  <body>
+    <div class="wrapper">
+      <header>
+        <h1><a style="color:black;" href="../">About</a></h1>
+        <p>
+          I'm Henri Verroken, I recently graduated with a Master's degree in
+          Computer Science and Engineering. This blog is mostly about Haskell.
+          Have fun reading!
+        </p>
+        <p>
+          <a href="https://be.linkedin.com/in/hverr"><img src="../images/linkedin.svg" alt="LinkedIn"></a>
+          <a href="https://github.com/hverr"><img src="../images/github.svg" alt="GitHub"></a>
+          <a href="../atom.xml"><img src="../images/rss.svg" alt="RSS"></a>
+        </p>
+        <p>
+          <i>
+            Found something incorrect? Found a typo? Other question or remark?
+            Drop me an email at
+            <script>
+              var u = "henri"; var v = "verroken"; var g = "gmail"; var t = "com";
+              var e = u + v + "@" + g + "." + t;
+              var a = "mail"; var b = "to:";
+              document.write('<a href="' + a + b + e + '">' + e + '</a>');
+            </script>
+          </i>
+        </p>
+      </header>
+
+      <section>
+        <h1>Introducing Haskey (Summer of Haskell 2017)</h1>
+        <p>Posted on August 24, 2017  - <a href="https://www.reddit.com/r/haskell/comments/6vqudp/introducing_haskey_summer_of_haskell_2017/?ref=share&ref_source=link">Discussion</a>  - <a href="../">All posts</a></p>
+<p><i>By Henri Verroken</i></p>
+<article>
+  <p>This blog post introduces the <a href="https://github.com/haskell-haskey">Haskey project</a>, an ACID compliant embedded key-value store entirely written in Haskell, based on an MVCC B+-tree implementation. It was developed as part of the <a href="https://summer.haskell.org/news/2017-05-24-accepted-projects.html">Summer of Haskell 2017</a>. We will take a look at two libraries that we wrote this summer.</p>
+<!--more-->
+<p>Before introducing the libraries, I must say I’m extremely grateful that I got the opportunity to be part of this year’s Summer of Haskell. I had really great fun working on this project for the last two months, even though they were incredibly challenging for me, as I had very little experience with the internals of database systems. This is entirely thanks to <a href="https://github.com/skeuchel">Steven Keuchel</a> who not only helped me and guided me during the challenging moments, but also made sure we were able to bond outside of the project. Furthermore, I’d like to thank the people who organized SoH 2017, not only because of the opportunities they have created for me, but also because of all the work they have done. I especially want to thank <a href="https://jaspervdj.be/">Jasper</a>, who helped me a lot with the necessary paperwork</p>
+<p><em><del>Disclaimer: Haskey is not production ready yet. We are still actively making changes to the public API and the internals, as well as the binary format.</del></em></p>
+<p><em>EDIT (9-Apr-2018): Haskey is now considered stable.</em></p>
+<p><em>EDIT (9-Apr-2018): Note that this document gives a good overview on how the library is structured, but might use outdated APIs. See <a href="https://github.com/haskell-haskey/haskey-mtl/blob/master/docs/tutorial.md">this up to date tutorial</a>, which covers a lot of the content in this article, to get started with Haskey.</em></p>
+<h2 id="haskeys-goal-and-design">Haskey’s goal and design</h2>
+<p>The goal of Haskey is to deliver a space efficient, fast and scalable key-value store to the Haskell community, which can be embedded into Haskell projects. To achieve this, we modeled Haskey after <a href="https://symas.com/lightning-memory-mapped-database/">LMDB</a>. Our design is based on an MVCC B+-tree, which allows us to provide non-blocking concurrent read access, and serialized write access, where readers and writers do not block each other.</p>
+<p>The past two months we have implemented this design, which resulted in two libraries, available on Hackage. The first is <a href="https://hackage.haskell.org/package/haskey-btree">haskey-btree</a>, which implements both a copy-in-place and copy-on-write B+-tree. The copy-on-write variant abstracts over an allocator, which is able to write and read B+tree nodes on demand. The second package is called <a href="https://hackage.haskell.org/package/haskey">haskey</a>. This package implements such an allocator. It allocates and manages pages to write the nodes to, and it provides transaction support and concurrent access, as well as data integrity. <a href="https://hackage.haskell.org/package/haskey-btree">haskey-btree</a> modifies the tree, while <a href="https://hackage.haskell.org/package/haskey">haskey</a> supports tree modifications.</p>
+<h2 id="the-b-tree-implementation">The B+-tree implementation</h2>
+<p>The <a href="https://hackage.haskell.org/package/haskey-btree">haskey-btree</a> package includes two separate implementations of B+-trees. The first one can be found in the <a href="https://hackage.haskell.org/package/haskey-btree-0.1.0.0/docs/Data-BTree-Pure.html">Data.BTree.Pure</a> module, which contains a pure, standard, textbook implementation of an in-memory B+-tree of a certain minimum degree. It is a standalone implementation, not used anywhere else in the code base, but still a nice thing to have. More interesting, however, is the copy-on-write B+-tree implementation in <a href="https://hackage.haskell.org/package/haskey-btree-0.1.0.0/docs/Data-BTree-Impure.html">Data.BTree.Impure</a>.</p>
+<p>If we look at some functions in <a href="https://hackage.haskell.org/package/haskey-btree-0.1.0.0/docs/Data-BTree-Impure.html">Data.BTree.Impure</a> that are used to modify and query the tree, we notice the following type signatures:</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb1-1" data-line-number="1"><span class="ot">lookupTree ::</span> (<span class="dt">AllocReaderM</span> m, <span class="dt">Key</span> key, <span class="dt">Value</span> val)</a>
+<a class="sourceLine" id="cb1-2" data-line-number="2">          <span class="ot">=&gt;</span> key</a>
+<a class="sourceLine" id="cb1-3" data-line-number="3">          <span class="ot">-&gt;</span> <span class="dt">Tree</span> key val<span class="ot">-&gt;</span> m (<span class="dt">Maybe</span> val)</a>
+<a class="sourceLine" id="cb1-4" data-line-number="4"></a>
+<a class="sourceLine" id="cb1-5" data-line-number="5"><span class="ot">insertTree ::</span> (<span class="dt">AllocM</span> m, <span class="dt">Key</span> key, <span class="dt">Value</span> val)</a>
+<a class="sourceLine" id="cb1-6" data-line-number="6">            <span class="ot">=&gt;</span> key</a>
+<a class="sourceLine" id="cb1-7" data-line-number="7">            <span class="ot">-&gt;</span> val</a>
+<a class="sourceLine" id="cb1-8" data-line-number="8">            <span class="ot">-&gt;</span> <span class="dt">Tree</span> key val</a>
+<a class="sourceLine" id="cb1-9" data-line-number="9">            <span class="ot">-&gt;</span> m (<span class="dt">Tree</span> key val)</a>
+<a class="sourceLine" id="cb1-10" data-line-number="10"></a>
+<a class="sourceLine" id="cb1-11" data-line-number="11"><span class="ot">deleteTree ::</span> (<span class="dt">AllocM</span> m, <span class="dt">Key</span> key, <span class="dt">Value</span> val)</a>
+<a class="sourceLine" id="cb1-12" data-line-number="12">           <span class="ot">=&gt;</span> key</a>
+<a class="sourceLine" id="cb1-13" data-line-number="13">           <span class="ot">-&gt;</span> <span class="dt">Tree</span> key val</a>
+<a class="sourceLine" id="cb1-14" data-line-number="14">           <span class="ot">-&gt;</span> m (<span class="dt">Tree</span> key val)</a></code></pre></div>
+<p>We can see that the functions operate in either the <a href="https://hackage.haskell.org/package/haskey-btree-0.1.0.0/docs/Data-BTree-Alloc-Class.html#t:AllocReaderM"><code class="sourceCode haskell"><span class="dt">AllocReaderM</span></code></a> or the <a href="https://hackage.haskell.org/package/haskey-btree-0.1.0.0/docs/Data-BTree-Alloc-Class.html#t:AllocM"><code class="sourceCode haskell"><span class="dt">AllocM</span></code></a> monad. Let’s take a closer look at the definitions of these type classes:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb2-1" data-line-number="1"><span class="kw">class</span> <span class="dt">Monad</span> m <span class="ot">=&gt;</span> <span class="dt">AllocReaderM</span> m <span class="kw">where</span></a>
+<a class="sourceLine" id="cb2-2" data-line-number="2"><span class="ot">  readNode ::</span> (<span class="dt">Key</span> key, <span class="dt">Value</span> val)</a>
+<a class="sourceLine" id="cb2-3" data-line-number="3">           <span class="ot">=&gt;</span> <span class="dt">Height</span> height</a>
+<a class="sourceLine" id="cb2-4" data-line-number="4">           <span class="ot">-&gt;</span> <span class="dt">NodeId</span> height key val</a>
+<a class="sourceLine" id="cb2-5" data-line-number="5">           <span class="ot">-&gt;</span> m (<span class="dt">Node</span> height key val)</a>
+<a class="sourceLine" id="cb2-6" data-line-number="6"></a>
+<a class="sourceLine" id="cb2-7" data-line-number="7"><span class="ot">  readOverflow ::</span> <span class="dt">Value</span> val <span class="ot">=&gt;</span> <span class="dt">OverflowId</span> <span class="ot">-&gt;</span> m val</a>
+<a class="sourceLine" id="cb2-8" data-line-number="8"></a>
+<a class="sourceLine" id="cb2-9" data-line-number="9"><span class="co">-- Not all functions included...</span></a>
+<a class="sourceLine" id="cb2-10" data-line-number="10"><span class="kw">class</span> <span class="dt">AllocReaderM</span> m <span class="ot">=&gt;</span> <span class="dt">AllocM</span> m <span class="kw">where</span></a>
+<a class="sourceLine" id="cb2-11" data-line-number="11"><span class="ot">  allocNode ::</span> (<span class="dt">Key</span> key, <span class="dt">Value</span> val)</a>
+<a class="sourceLine" id="cb2-12" data-line-number="12">            <span class="ot">=&gt;</span> <span class="dt">Height</span> height</a>
+<a class="sourceLine" id="cb2-13" data-line-number="13">            <span class="ot">-&gt;</span> <span class="dt">Node</span> height key val</a>
+<a class="sourceLine" id="cb2-14" data-line-number="14">            <span class="ot">-&gt;</span> m (<span class="dt">NodeId</span> height key val)</a>
+<a class="sourceLine" id="cb2-15" data-line-number="15"><span class="ot">  freeNode ::</span> <span class="dt">Height</span> height <span class="ot">-&gt;</span> <span class="dt">NodeId</span> height key val <span class="ot">-&gt;</span> m ()</a>
+<a class="sourceLine" id="cb2-16" data-line-number="16"></a>
+<a class="sourceLine" id="cb2-17" data-line-number="17"><span class="ot">  allocOverflow ::</span> <span class="dt">Value</span> val <span class="ot">=&gt;</span> val <span class="ot">-&gt;</span> m <span class="dt">OverflowId</span></a>
+<a class="sourceLine" id="cb2-18" data-line-number="18"><span class="ot">  freeOverflow ::</span> <span class="dt">OverflowId</span> <span class="ot">-&gt;</span> m ()</a></code></pre></div>
+<p>We can see that the <a href="https://hackage.haskell.org/package/haskey-btree-0.1.0.0/docs/Data-BTree-Alloc-Class.html#t:AllocReaderM"><code class="sourceCode haskell"><span class="dt">AllocReaderM</span></code></a> type class supports operations to read B+-tree nodes and overflow values with a certain ID, while the <a href="https://hackage.haskell.org/package/haskey-btree-0.1.0.0/docs/Data-BTree-Alloc-Class.html#t:AllocM"><code class="sourceCode haskell"><span class="dt">AllocM</span></code></a> type class supports operations to write and free B+-tree nodes and overflow values. How do we get such an allocator? Well, the <a href="https://hackage.haskell.org/package/haskey-btree-0.1.0.0/docs/Data-BTree-Alloc-Debug.html">Date.BTree.Alloc.Debug</a> module contains an in-memory allocator based on <a href="https://hackage.haskell.org/package/containers-0.5.7.1/docs/Data-Map-Lazy.html#t:Map">Data.Map</a>. It is very inefficient, and solely intended for testing and debugging purposes, but it provides a good example on how to start implementing an allocator from scratch.</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb3-1" data-line-number="1"><span class="kw">import</span> <span class="dt">Data.BTree.Alloc.Debug</span> (<span class="dt">Pages</span>, runDebugT, emptyPages)</a>
+<a class="sourceLine" id="cb3-2" data-line-number="2"><span class="kw">import</span> <span class="dt">Data.BTree.Impure</span> (<span class="dt">Tree</span>, empty, insertTree)</a>
+<a class="sourceLine" id="cb3-3" data-line-number="3"></a>
+<a class="sourceLine" id="cb3-4" data-line-number="4"><span class="ot">debugAllocatorExample ::</span> (<span class="dt">Tree</span> <span class="dt">ByteString</span> <span class="dt">ByteString</span>, <span class="dt">Pages</span>)</a>
+<a class="sourceLine" id="cb3-5" data-line-number="5">debugAllocatorExample <span class="fu">=</span> runDebugT emptyPages <span class="fu">$</span> <span class="kw">do</span></a>
+<a class="sourceLine" id="cb3-6" data-line-number="6">      return empty</a>
+<a class="sourceLine" id="cb3-7" data-line-number="7">  <span class="fu">&gt;&gt;=</span> insertTree <span class="st">&quot;key1&quot;</span> <span class="st">&quot;wrong value&quot;</span></a>
+<a class="sourceLine" id="cb3-8" data-line-number="8">  <span class="fu">&gt;&gt;=</span> insertTree <span class="st">&quot;key1&quot;</span> <span class="st">&quot;correct value&quot;</span></a>
+<a class="sourceLine" id="cb3-9" data-line-number="9">  <span class="fu">&gt;&gt;=</span> insertTree <span class="st">&quot;key2&quot;</span> <span class="st">&quot;other value&quot;</span></a></code></pre></div>
+<p>In the code listing above you can see the debug allocator in action. For a more robust, space efficient and thread-safe allocator we have to turn to the <a href="https://hackage.haskell.org/package/haskey">haskey</a> library.</p>
+<h2 id="robust-thread-safe-allocator">Robust, thread-safe allocator</h2>
+<p>The <a href="https://hackage.haskell.org/package/haskey">haskey</a> library builds upon the <a href="https://hackage.haskell.org/package/haskey-btree">haskey-btree</a> library by providing a robust, thread-safe page allocator with transaction support. It allows for multiple concurrent readers which do not block each other, and serialized write access. Furthermore, readers do not block writers, and vice versa.</p>
+<p>The actual allocator is implemented in an internal module called <a href="http://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Alloc-Concurrent-Monad.html">Database.Haskey.Alloc.Concurrent.Monad</a>, but you don’t really need to know about it. The exported functions in <a href="https://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Alloc-Concurrent.html">Database.Haskey.Alloc.Concurrent</a> use this monad internally, and they are sufficient to use the allocator. The following functions are particularly interesting:</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb4-1" data-line-number="1"><span class="co">-- Simplified type signatures...</span></a>
+<a class="sourceLine" id="cb4-2" data-line-number="2"><span class="ot">createConcurrentDb ::</span> (<span class="dt">ConcurrentMetaStoreM</span> m, <span class="dt">Key</span> k, <span class="dt">Value</span> v)</a>
+<a class="sourceLine" id="cb4-3" data-line-number="3">                   <span class="ot">=&gt;</span> <span class="dt">ConcurrentHandles</span></a>
+<a class="sourceLine" id="cb4-4" data-line-number="4">                   <span class="ot">-&gt;</span> m (<span class="dt">ConcurrentDb</span> k v)</a>
+<a class="sourceLine" id="cb4-5" data-line-number="5"></a>
+<a class="sourceLine" id="cb4-6" data-line-number="6"><span class="ot">openConcurrentDb ::</span> (<span class="dt">Key</span> k, <span class="dt">Value</span> v, <span class="dt">ConcurrentMetaStoreM</span> m)</a>
+<a class="sourceLine" id="cb4-7" data-line-number="7">                 <span class="ot">=&gt;</span> <span class="dt">ConcurrentHandles</span></a>
+<a class="sourceLine" id="cb4-8" data-line-number="8">                 <span class="ot">-&gt;</span> m (<span class="dt">Maybe</span> (<span class="dt">ConcurrentDb</span> k v))</a>
+<a class="sourceLine" id="cb4-9" data-line-number="9"></a>
+<a class="sourceLine" id="cb4-10" data-line-number="10"><span class="ot">transact ::</span> (<span class="dt">ConcurrentMetaStoreM</span> m, <span class="dt">Key</span> k, <span class="dt">Value</span> v)</a>
+<a class="sourceLine" id="cb4-11" data-line-number="11">         <span class="ot">=&gt;</span> (forall n<span class="fu">.</span> <span class="dt">AllocM</span> n <span class="ot">=&gt;</span> <span class="dt">Tree</span> key val <span class="ot">-&gt;</span> n (<span class="dt">Transaction</span> key val a))</a>
+<a class="sourceLine" id="cb4-12" data-line-number="12">         <span class="ot">-&gt;</span> <span class="dt">ConcurrentDb</span> key val</a>
+<a class="sourceLine" id="cb4-13" data-line-number="13">         <span class="ot">-&gt;</span> m a</a>
+<a class="sourceLine" id="cb4-14" data-line-number="14"></a>
+<a class="sourceLine" id="cb4-15" data-line-number="15"><span class="ot">transactReadOnly ::</span> (<span class="dt">ConcurrentMetaStoreM</span> m, <span class="dt">Key</span> k, <span class="dt">Value</span> v)</a>
+<a class="sourceLine" id="cb4-16" data-line-number="16">                 <span class="ot">=&gt;</span> (forall n<span class="fu">.</span> <span class="dt">AllocReaderM</span> n <span class="ot">=&gt;</span> <span class="dt">Tree</span> key val <span class="ot">-&gt;</span> n a)</a>
+<a class="sourceLine" id="cb4-17" data-line-number="17">                 <span class="ot">-&gt;</span> <span class="dt">ConcurrentDb</span> key val</a>
+<a class="sourceLine" id="cb4-18" data-line-number="18">                 <span class="ot">-&gt;</span> m a</a></code></pre></div>
+<p>The <a href="http://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Alloc-Concurrent.html#v:openConcurrentDb"><code class="sourceCode haskell">openConcurrentDb</code></a> and <a href="http://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Alloc-Concurrent.html#v:createConcurrentDb"><code class="sourceCode haskell">createConcurrentDb</code></a> functions are used to create new and open existing databases. While the <a href="http://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Alloc-Concurrent.html#v:transact"><code class="sourceCode haskell">transact</code></a> and the <a href="http://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Alloc-Concurrent.html#v:transactReadOnly"><code class="sourceCode haskell">transactReadOnly</code></a> functions are used to start read-write and read-only transactions.</p>
+<p>We can see that the <a href="http://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Alloc-Concurrent.html#v:transact"><code class="sourceCode haskell">transact</code></a> and <a href="http://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Alloc-Concurrent.html#v:transactReadOnly"><code class="sourceCode haskell">transactReadOnly</code></a> functions take a function that takes a tree root and can do <a href="https://hackage.haskell.org/package/haskey-btree-0.1.0.0/docs/Data-BTree-Alloc-Class.html#t:AllocM"><code class="sourceCode haskell"><span class="dt">AllocM</span></code></a> and <a href="https://hackage.haskell.org/package/haskey-btree-0.1.0.0/docs/Data-BTree-Alloc-Class.html#t:AllocReaderM"><code class="sourceCode haskell"><span class="dt">AllocReaderM</span></code></a> actions. Exactly what we need to run tree modifications and queries from <a href="https://hackage.haskell.org/package/haskey-btree-0.1.0.0/docs/Data-BTree-Impure.html">Data.BTree.Impure</a>! Excellent!</p>
+<p>But there is one more catch! We need to run these functions in a <a href="http://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Alloc-Concurrent.html#t:ConcurrentMetaStoreM"><code class="sourceCode haskell"><span class="dt">ConcurrentMetaStoreM</span></code></a>! Where can we find such a monad?</p>
+<h2 id="the-storage-back-end">The storage back-end</h2>
+<p>Let’s take a closer look to the <a href="http://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Alloc-Concurrent.html#t:ConcurrentMetaStoreM"><code class="sourceCode haskell"><span class="dt">ConcurrentMetaStoreM</span></code></a> type class. The functions in the type class aren’t all that interesting, but the superclass is! It’s the <a href="http://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Store-Class.html#t:StoreM"><code class="sourceCode haskell"><span class="dt">StoreM</span></code></a> class:</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb5-1" data-line-number="1"><span class="kw">class</span> <span class="dt">StoreM</span> FilePath m <span class="ot">=&gt;</span> <span class="dt">ConcurrentMetaStoreM</span> m <span class="kw">where</span></a>
+<a class="sourceLine" id="cb5-2" data-line-number="2">  <span class="co">-- Omitted type class body...</span></a>
+<a class="sourceLine" id="cb5-3" data-line-number="3"></a>
+<a class="sourceLine" id="cb5-4" data-line-number="4"><span class="co">-- Simplified type signatures, not all functions included...</span></a>
+<a class="sourceLine" id="cb5-5" data-line-number="5"><span class="kw">class</span> <span class="dt">Monad</span> m <span class="ot">=&gt;</span> <span class="dt">StoreM</span> hnd m <span class="fu">|</span> m <span class="ot">-&gt;</span> hnd <span class="kw">where</span></a>
+<a class="sourceLine" id="cb5-6" data-line-number="6"><span class="ot">  putNodePage ::</span> (<span class="dt">Key</span> key, <span class="dt">Value</span> val)</a>
+<a class="sourceLine" id="cb5-7" data-line-number="7">              <span class="ot">=&gt;</span> hnd</a>
+<a class="sourceLine" id="cb5-8" data-line-number="8">              <span class="ot">-&gt;</span> <span class="dt">Height</span> height</a>
+<a class="sourceLine" id="cb5-9" data-line-number="9">              <span class="ot">-&gt;</span> <span class="dt">NodeId</span> height key val</a>
+<a class="sourceLine" id="cb5-10" data-line-number="10">              <span class="ot">-&gt;</span> <span class="dt">Node</span> height key val</a>
+<a class="sourceLine" id="cb5-11" data-line-number="11">              <span class="ot">-&gt;</span> m ()</a>
+<a class="sourceLine" id="cb5-12" data-line-number="12"></a>
+<a class="sourceLine" id="cb5-13" data-line-number="13"><span class="ot">  getNodePage ::</span> (<span class="dt">Key</span> key, <span class="dt">Value</span> val)</a>
+<a class="sourceLine" id="cb5-14" data-line-number="14">              <span class="ot">=&gt;</span> hnd</a>
+<a class="sourceLine" id="cb5-15" data-line-number="15">              <span class="ot">-&gt;</span> <span class="dt">Height</span> height</a>
+<a class="sourceLine" id="cb5-16" data-line-number="16">              <span class="ot">-&gt;</span> <span class="dt">NodeId</span> height key val</a>
+<a class="sourceLine" id="cb5-17" data-line-number="17">              <span class="ot">-&gt;</span> m (<span class="dt">Node</span> height key val)</a>
+<a class="sourceLine" id="cb5-18" data-line-number="18"></a>
+<a class="sourceLine" id="cb5-19" data-line-number="19"><span class="ot">  putOverflow ::</span> <span class="dt">Value</span> val <span class="ot">=&gt;</span> hnd <span class="ot">-&gt;</span> val m ()</a>
+<a class="sourceLine" id="cb5-20" data-line-number="20"><span class="ot">  getOverflow ::</span> <span class="dt">Value</span> val <span class="ot">=&gt;</span> hnd <span class="ot">-&gt;</span> m val</a></code></pre></div>
+<p>We can see that the <a href="http://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Store-Class.html#t:StoreM"><code class="sourceCode haskell"><span class="dt">StoreM</span></code></a> type class simply abstracts over a storage back-end that can read and write pages and overflow values. There are two built-in storage back-ends. One is the <a href="https://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Store-InMemory.html">InMemory</a> storage back-end, which we’ll let you discover by yourself. The other one is the on-disk store in <a href="https://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Store-File.html">Database.Haskey.Store.File</a>. Let’s look at the interesting functions.</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb6-1" data-line-number="1"><span class="ot">newFileStore ::</span> <span class="dt">IO</span> (<span class="dt">Files</span> fp)</a>
+<a class="sourceLine" id="cb6-2" data-line-number="2"></a>
+<a class="sourceLine" id="cb6-3" data-line-number="3"><span class="ot">runFileStoreT ::</span> <span class="dt">FileStoreT</span> fp m a <span class="co">-- ^ Database actions</span></a>
+<a class="sourceLine" id="cb6-4" data-line-number="4">              <span class="ot">-&gt;</span> <span class="dt">FileStoreConfig</span>   <span class="co">-- ^ Database configuration</span></a>
+<a class="sourceLine" id="cb6-5" data-line-number="5">              <span class="ot">-&gt;</span> <span class="dt">Files</span> fp          <span class="co">-- ^ Open database files</span></a>
+<a class="sourceLine" id="cb6-6" data-line-number="6">              <span class="ot">-&gt;</span> m a</a></code></pre></div>
+<p>The <a href="https://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Store-File.html#v:newFileStore"><code class="sourceCode haskell">newFileStore</code></a> function creates a new uninitialized state for the file storage back-end. This is a simple <code class="sourceCode haskell"><span class="dt">IORef</span></code> that can safely be accessed by concurrent threads. Those threads can safely call <a href="https://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Store-File.html#v:runFileStoreT"><code class="sourceCode haskell">runFileStoreT</code></a> with that state.</p>
+<p>The <a href="https://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Store-File.html#v:runFileStoreT"><code class="sourceCode haskell">runFileStoreT</code></a> function takes a <a href="https://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Store-File.html#t:FileStoreT"><code class="sourceCode haskell"><span class="dt">FileStoreT</span></code></a> action. Lucky for us, there is an instance of <a href="https://hackage.haskell.org/package/haskey-btree-0.1.0.0/docs/Data-BTree-Alloc-Class.html#t:AllocM"><code class="sourceCode haskell"><span class="dt">AllocM</span></code></a> and <a href="http://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Alloc-Concurrent.html#t:ConcurrentMetaStoreM"><code class="sourceCode haskell"><span class="dt">ConcurrentMetaStoreM</span></code></a> for <a href="https://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Store-File.html#t:FileStoreT"><code class="sourceCode haskell"><span class="dt">FileStoreT</span></code></a> ! This allows us to run our beloved transactions.</p>
+<h2 id="full-code-example">Full code example</h2>
+<p>We now have all the pieces to stitch together an example. Let the code do the talking! Example code is also available on <a href="https://github.com/haskell-haskey/haskey/tree/master/example">GitHub</a><a href="#fn1" class="footnote-ref" id="fnref1"><sup>1</sup></a>.</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb7-1" data-line-number="1"><span class="kw">module</span> <span class="dt">Main</span> <span class="kw">where</span></a>
+<a class="sourceLine" id="cb7-2" data-line-number="2"></a>
+<a class="sourceLine" id="cb7-3" data-line-number="3"><span class="kw">import</span> <span class="dt">Control.Concurrent.Async</span> (async, wait)</a>
+<a class="sourceLine" id="cb7-4" data-line-number="4"><span class="kw">import</span> <span class="dt">Control.Monad</span> (void, replicateM)</a>
+<a class="sourceLine" id="cb7-5" data-line-number="5"></a>
+<a class="sourceLine" id="cb7-6" data-line-number="6"><span class="kw">import</span> <span class="dt">Data.BTree.Impure</span> (toList, insertTree)</a>
+<a class="sourceLine" id="cb7-7" data-line-number="7"><span class="kw">import</span> <span class="dt">Data.ByteString</span> (<span class="dt">ByteString</span>)</a>
+<a class="sourceLine" id="cb7-8" data-line-number="8"><span class="kw">import</span> <span class="dt">Data.Int</span> (<span class="dt">Int32</span>)</a>
+<a class="sourceLine" id="cb7-9" data-line-number="9"><span class="kw">import</span> <span class="dt">Data.Text.Encoding</span> (encodeUtf8)</a>
+<a class="sourceLine" id="cb7-10" data-line-number="10"><span class="kw">import</span> <span class="kw">qualified</span> <span class="dt">Data.Text</span> <span class="kw">as</span> <span class="dt">Text</span></a>
+<a class="sourceLine" id="cb7-11" data-line-number="11"></a>
+<a class="sourceLine" id="cb7-12" data-line-number="12"><span class="kw">import</span> <span class="dt">Database.Haskey.Alloc.Concurrent</span> (<span class="dt">ConcurrentDb</span>,</a>
+<a class="sourceLine" id="cb7-13" data-line-number="13">                                         <span class="dt">ConcurrentHandles</span>,</a>
+<a class="sourceLine" id="cb7-14" data-line-number="14">                                         concurrentHandles,</a>
+<a class="sourceLine" id="cb7-15" data-line-number="15">                                         openConcurrentDb,</a>
+<a class="sourceLine" id="cb7-16" data-line-number="16">                                         createConcurrentDb,</a>
+<a class="sourceLine" id="cb7-17" data-line-number="17">                                         transact_,</a>
+<a class="sourceLine" id="cb7-18" data-line-number="18">                                         transactReadOnly,</a>
+<a class="sourceLine" id="cb7-19" data-line-number="19">                                         commit_)</a>
+<a class="sourceLine" id="cb7-20" data-line-number="20"><span class="kw">import</span> <span class="dt">Database.Haskey.Store.File</span> (<span class="dt">FileStoreT</span>, <span class="dt">Files</span>, newFileStore,</a>
+<a class="sourceLine" id="cb7-21" data-line-number="21">                                   runFileStoreT, defFileStoreConfig)</a>
+<a class="sourceLine" id="cb7-22" data-line-number="22"></a>
+<a class="sourceLine" id="cb7-23" data-line-number="23"><span class="ot">main ::</span> <span class="dt">IO</span> ()</a>
+<a class="sourceLine" id="cb7-24" data-line-number="24">main <span class="fu">=</span> <span class="kw">do</span></a>
+<a class="sourceLine" id="cb7-25" data-line-number="25">    store <span class="ot">&lt;-</span> newFileStore</a>
+<a class="sourceLine" id="cb7-26" data-line-number="26">    db    <span class="ot">&lt;-</span> openOrCreate store</a>
+<a class="sourceLine" id="cb7-27" data-line-number="27"></a>
+<a class="sourceLine" id="cb7-28" data-line-number="28">    writers <span class="ot">&lt;-</span> mapM (async <span class="fu">.</span> writer store db) [<span class="dv">1</span><span class="fu">..</span><span class="dv">100</span>]</a>
+<a class="sourceLine" id="cb7-29" data-line-number="29">    readers <span class="ot">&lt;-</span> replicateM <span class="dv">100</span> <span class="fu">$</span> async (reader store db)</a>
+<a class="sourceLine" id="cb7-30" data-line-number="30">    mapM_ wait writers</a>
+<a class="sourceLine" id="cb7-31" data-line-number="31">    mapM_ wait readers</a>
+<a class="sourceLine" id="cb7-32" data-line-number="32">    putStrLn <span class="st">&quot;Done&quot;</span></a>
+<a class="sourceLine" id="cb7-33" data-line-number="33"></a>
+<a class="sourceLine" id="cb7-34" data-line-number="34"></a>
+<a class="sourceLine" id="cb7-35" data-line-number="35"><span class="ot">writer ::</span> <span class="dt">Files</span> FilePath</a>
+<a class="sourceLine" id="cb7-36" data-line-number="36">       <span class="ot">-&gt;</span> <span class="dt">ConcurrentDb</span> <span class="dt">Int32</span> <span class="dt">ByteString</span></a>
+<a class="sourceLine" id="cb7-37" data-line-number="37">       <span class="ot">-&gt;</span> <span class="dt">Int32</span></a>
+<a class="sourceLine" id="cb7-38" data-line-number="38">       <span class="ot">-&gt;</span> <span class="dt">IO</span> ()</a>
+<a class="sourceLine" id="cb7-39" data-line-number="39">writer store db i <span class="fu">=</span></a>
+<a class="sourceLine" id="cb7-40" data-line-number="40">    runDatabase store <span class="fu">$</span> transact_ tx db</a>
+<a class="sourceLine" id="cb7-41" data-line-number="41">  <span class="kw">where</span></a>
+<a class="sourceLine" id="cb7-42" data-line-number="42">    bs <span class="fu">=</span> encodeUtf8 <span class="fu">$</span> Text.pack (show i)</a>
+<a class="sourceLine" id="cb7-43" data-line-number="43"></a>
+<a class="sourceLine" id="cb7-44" data-line-number="44">    tx tree <span class="fu">=</span> insertTree i bs tree <span class="fu">&gt;&gt;=</span> commit_</a>
+<a class="sourceLine" id="cb7-45" data-line-number="45"></a>
+<a class="sourceLine" id="cb7-46" data-line-number="46"><span class="ot">reader ::</span> <span class="dt">Files</span> FilePath</a>
+<a class="sourceLine" id="cb7-47" data-line-number="47">       <span class="ot">-&gt;</span> <span class="dt">ConcurrentDb</span> <span class="dt">Int32</span> <span class="dt">ByteString</span></a>
+<a class="sourceLine" id="cb7-48" data-line-number="48">       <span class="ot">-&gt;</span> <span class="dt">IO</span> ()</a>
+<a class="sourceLine" id="cb7-49" data-line-number="49">reader files db <span class="fu">=</span> void <span class="fu">$</span> replicateM <span class="dv">100</span> <span class="fu">$</span> runDatabase files <span class="fu">$</span></a>
+<a class="sourceLine" id="cb7-50" data-line-number="50">    transactReadOnly toList db</a>
+<a class="sourceLine" id="cb7-51" data-line-number="51"></a>
+<a class="sourceLine" id="cb7-52" data-line-number="52"><span class="ot">openOrCreate ::</span> <span class="dt">Files</span> FilePath</a>
+<a class="sourceLine" id="cb7-53" data-line-number="53">             <span class="ot">-&gt;</span> <span class="dt">IO</span> (<span class="dt">ConcurrentDb</span> <span class="dt">Int32</span> <span class="dt">ByteString</span>)</a>
+<a class="sourceLine" id="cb7-54" data-line-number="54">openOrCreate store <span class="fu">=</span> runDatabase store <span class="fu">$</span> <span class="kw">do</span></a>
+<a class="sourceLine" id="cb7-55" data-line-number="55">    maybeDb <span class="ot">&lt;-</span> openConcurrentDb handles</a>
+<a class="sourceLine" id="cb7-56" data-line-number="56">    <span class="kw">case</span> maybeDb <span class="kw">of</span></a>
+<a class="sourceLine" id="cb7-57" data-line-number="57">        <span class="dt">Nothing</span> <span class="ot">-&gt;</span> createConcurrentDb handles</a>
+<a class="sourceLine" id="cb7-58" data-line-number="58">        <span class="dt">Just</span> db <span class="ot">-&gt;</span> return db</a>
+<a class="sourceLine" id="cb7-59" data-line-number="59"></a>
+<a class="sourceLine" id="cb7-60" data-line-number="60"><span class="ot">runDatabase ::</span> <span class="dt">Files</span> FilePath</a>
+<a class="sourceLine" id="cb7-61" data-line-number="61">            <span class="ot">-&gt;</span> <span class="dt">FileStoreT</span> FilePath m a</a>
+<a class="sourceLine" id="cb7-62" data-line-number="62">            <span class="ot">-&gt;</span> m a</a>
+<a class="sourceLine" id="cb7-63" data-line-number="63">runDatabase files action <span class="fu">=</span> runFileStoreT action defFileStoreConfig files</a>
+<a class="sourceLine" id="cb7-64" data-line-number="64"></a>
+<a class="sourceLine" id="cb7-65" data-line-number="65"><span class="ot">handles ::</span> <span class="dt">ConcurrentHandles</span></a>
+<a class="sourceLine" id="cb7-66" data-line-number="66">handles <span class="fu">=</span> concurrentHandles <span class="st">&quot;example-database.haskey&quot;</span></a></code></pre></div>
+<section class="footnotes">
+<hr />
+<ol>
+<li id="fn1"><p>Note that at the moment concurrent readers are disabled, because of a race condition in the code. However, the code example will work.<a href="#fnref1" class="footnote-back">↩</a></p></li>
+</ol>
+</section>
+</article>
+
+      </section>
+
+      <footer>
+        <p>Blog by Henri Verroken.</p>
+        <p>
+          <small>
+            Site generated by <a href="http://jaspervdj.be/hakyll">Hakyll</a>.
+            Theme adapted from <a href="https://github.com/orderedlist">orderedlist</a>.
+          </small>
+        </p>
+      </footer>
+  </body>
+</html>

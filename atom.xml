@@ -1,0 +1,727 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+    <title>Henri's Blog</title>
+    <link href="https://deliquus.com/atom.xml" rel="self" />
+    <link href="https://deliquus.com" />
+    <id>https://deliquus.com/atom.xml</id>
+    <author>
+        <name>Henri Verroken</name>
+        <email></email>
+    </author>
+    <updated>2018-07-30T00:00:00Z</updated>
+    <entry>
+    <title>Making Haskell as fast as C: Imperative programming in Haskell</title>
+    <link href="https://deliquus.com/posts/2018-07-30-imperative-programming-in-haskell.html" />
+    <id>https://deliquus.com/posts/2018-07-30-imperative-programming-in-haskell.html</id>
+    <published>2018-07-30T00:00:00Z</published>
+    <updated>2018-07-30T00:00:00Z</updated>
+    <summary type="html"><![CDATA[<p>Posted on July 30, 2018  - <a href="https://www.reddit.com/r/haskell/comments/93haco/making_haskell_as_fast_as_c_imperative/">Discussion</a>  - <a href="/">All posts</a></p>
+<p><i>By Henri Verroken</i></p>
+<article>
+  <p>Implementing efficient and fast data structures in Haskell is not straightforward. A functional implementation of an abstract data type is often orders of magnitude slower than an imperative solution that provides the same functionality. This blog post compares several implementations of a concrete and relatively simple abstract data type in terms of execution time. Ultimately, we develop an imperative data structure using native Haskell code that is as fast as its C equivalent.</p>
+<!--more-->
+<p>We will consider a <strong>set of integer numbers</strong> as a simple abstract data type. Our set of integers has <strong>two operations</strong>:</p>
+<ol type="1">
+<li><code>add</code>: <strong>Add</strong> an integer to the set, ignoring duplicates as is expected from a regular set.</li>
+<li><code>check</code>: <strong>Check</strong> whether a given integer is in the set or not, returning a Boolean value.</li>
+</ol>
+<p>For the purpose of brevity, we have not included an operation that removes an integer from the set. The reader will most certainly be able to add this operation to the proposed solutions if desired.</p>
+<p>We will furthermore assume that the integer set will have to be scalable to hold numbers from a <b>large predefined range</b> (e.g. values from 5 to 15 million) and that the set will be very <b>densely populated</b>.</p>
+<p>We will compare several implementations by leveraging the excellent <a href="https://hackage.haskell.org/package/criterion">criterion</a> benchmark library. First, we will consider several naive implementations which use off-the-shelf Haskell data structures. Then we will explore the performance of a C implementation using Haskell’s foreign function interface. Lastly, we will try to match the speed of C by porting the imperative C data structure to Haskell. All code is available on <a href="https://github.com/hverr/intset-compare">GitHub</a>.</p>
+<h2 id="defining-the-benchmark">Defining the benchmark</h2>
+<p>As previously discussed we will consider a densely populated integer set with addition and lookup operations for a certain range. To adequately benchmark all data structures, we sequentially insert and query a predefined array of numbers<a href="#fn1" class="footnote-ref" id="fnref1"><sup>1</sup></a>.</p>
+<p>The code below shows the general structure of a benchmark for a specific data structure. Generating the list of integers is not included in the benchmark. We have executed the benchmark and plotted the results for various ranges<sup><a href="https://github.com/hverr/intset-compare/blob/master/bench/Bench.hs">full code</a></sup>.</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb1-1" data-line-number="1"><span class="kw">import</span> <span class="dt">MyIntSetModule</span> <span class="kw">as</span> <span class="dt">M</span></a>
+<a class="sourceLine" id="cb1-2" data-line-number="2"></a>
+<a class="sourceLine" id="cb1-3" data-line-number="3"><span class="ot">intsetBench ::</span> <span class="dt">Word64</span>         <span class="co">-- ^ Lower bound</span></a>
+<a class="sourceLine" id="cb1-4" data-line-number="4">            <span class="ot">-&gt;</span> <span class="dt">Word64</span>         <span class="co">-- ^ Upper bound</span></a>
+<a class="sourceLine" id="cb1-5" data-line-number="5">            <span class="ot">-&gt;</span> <span class="dt">Vector</span> <span class="dt">Word64</span>  <span class="co">-- ^ Integers to add</span></a>
+<a class="sourceLine" id="cb1-6" data-line-number="6">            <span class="ot">-&gt;</span> <span class="dt">IO</span> ()</a>
+<a class="sourceLine" id="cb1-7" data-line-number="7">intsetBench minB maxB xs <span class="fu">=</span> <span class="kw">do</span></a>
+<a class="sourceLine" id="cb1-8" data-line-number="8">    s <span class="ot">&lt;-</span> M.new minB maxB</a>
+<a class="sourceLine" id="cb1-9" data-line-number="9">    forM_ xs <span class="fu">$</span> \i <span class="ot">-&gt;</span> <span class="kw">do</span></a>
+<a class="sourceLine" id="cb1-10" data-line-number="10">        M.add s i</a>
+<a class="sourceLine" id="cb1-11" data-line-number="11">        f <span class="ot">&lt;-</span> M.check s i</a>
+<a class="sourceLine" id="cb1-12" data-line-number="12">        unless f <span class="fu">$</span></a>
+<a class="sourceLine" id="cb1-13" data-line-number="13">            throwIO <span class="fu">$</span> userError <span class="st">&quot;implementation errors&quot;</span></a>
+<a class="sourceLine" id="cb1-14" data-line-number="14"></a>
+<a class="sourceLine" id="cb1-15" data-line-number="15"><span class="ot">generateInts ::</span> <span class="dt">Word64</span> <span class="ot">-&gt;</span> <span class="dt">Word64</span> <span class="ot">-&gt;</span> <span class="dt">Int</span> <span class="ot">-&gt;</span> <span class="dt">Vector</span> <span class="dt">Word64</span></a>
+<a class="sourceLine" id="cb1-16" data-line-number="16">generateInts minB maxB n <span class="fu">=</span></a>
+<a class="sourceLine" id="cb1-17" data-line-number="17">    V.fromList <span class="fu">.</span> take n <span class="fu">$</span> randomRs (minB, maxB) (mkStdGen <span class="bn">0x214f36c9</span>)</a></code></pre></div>
+<h2 id="off-the-shelf-haskell-data-structures">Off-the-shelf Haskell data structures</h2>
+<p>The Haskell library ecosystem contains many set-like data structures. The <a href="https://hackage.haskell.org/package/containers/docs/Data-Set.html">Data.Set</a> module exposes <code class="sourceCode haskell"><span class="dt">Set</span></code>, which is based on binary search tries<a href="#fn2" class="footnote-ref" id="fnref2"><sup>2</sup></a>, while the <a href="https://hackage.haskell.org/package/hashmap/docs/Data-HashSet.html">Data.HashSet</a> module implements <code class="sourceCode haskell"><span class="dt">HashSet</span></code>, which uses a data structure called a <a href="https://en.wikipedia.org/wiki/Hash_array_mapped_trie">hash array mapped trie or HAMT</a>. The <em>containers</em> package even includes the specialized <a href="https://hackage.haskell.org/package/containers/docs/Data-IntSet.html">Data.IntSet</a> module, especially developed for storing dense integer set. Its implementation is based on Patricia tries, a variant on binary tries<a href="#fn3" class="footnote-ref" id="fnref3"><sup>3</sup></a>.</p>
+<p>All of these data structures are persistent, often with different performance characteristics. To give a detailed overview of these data structures would lead us too far – we refer to the documentation and the provided resources – but we can easily check their performance using our benchmark.</p>
+<p><img src="/images/2018-07-30/plots/naive.svg" /></p>
+<p>We can see that execution times are acceptable for small set sizes. However, for large set sizes, building and accessing the set becomes unacceptably slow.</p>
+<h2 id="bit-vectors-in-c">Bit vectors in C</h2>
+<p>The desired abstract data type immediately hints at a very simple solution. Since we know the integer set will be very densely populated, and the range of integers is predefined, we can simply use a bit vector, keeping a bit for each possible number in the set. In such a way, storing 10 million numbers would require only 1.2 MB.</p>
+<p>Implementing such a set in C is rather straightforward. And requires only a minimal amount of code<a href="#fn4" class="footnote-ref" id="fnref4"><sup>4</sup></a><sup>,<a href="https://github.com/hverr/intset-compare/blob/master/src-c/intset.c">full code</a></sup>:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode c"><code class="sourceCode c"><a class="sourceLine" id="cb2-1" data-line-number="1"><span class="kw">typedef</span> <span class="kw">struct</span> int_set_t {</a>
+<a class="sourceLine" id="cb2-2" data-line-number="2">    <span class="dt">uint64_t</span> min_bound;</a>
+<a class="sourceLine" id="cb2-3" data-line-number="3">    <span class="dt">uint64_t</span> max_bound;</a>
+<a class="sourceLine" id="cb2-4" data-line-number="4">    <span class="dt">uint64_t</span>* in_bounds;</a>
+<a class="sourceLine" id="cb2-5" data-line-number="5">} int_set_t;</a>
+<a class="sourceLine" id="cb2-6" data-line-number="6"></a>
+<a class="sourceLine" id="cb2-7" data-line-number="7">int_set_t* new_int_set(<span class="dt">uint64_t</span> min_bound, <span class="dt">uint64_t</span> max_bound) {</a>
+<a class="sourceLine" id="cb2-8" data-line-number="8">    <span class="dt">size_t</span> num_in_bounds = (<span class="dt">size_t</span>)(max_bound - min_bound) / <span class="dv">64</span> + <span class="dv">1</span>;</a>
+<a class="sourceLine" id="cb2-9" data-line-number="9"></a>
+<a class="sourceLine" id="cb2-10" data-line-number="10">    int_set_t* set = (int_set_t* )calloc(<span class="dv">1</span>, <span class="kw">sizeof</span>(int_set_t));</a>
+<a class="sourceLine" id="cb2-11" data-line-number="11">    set-&gt;min_bound = min_bound;</a>
+<a class="sourceLine" id="cb2-12" data-line-number="12">    set-&gt;max_bound = max_bound;</a>
+<a class="sourceLine" id="cb2-13" data-line-number="13">    set-&gt;in_bounds = (<span class="dt">uint64_t</span>* )calloc(num_in_bounds, <span class="kw">sizeof</span>(<span class="dt">uint64_t</span>));</a>
+<a class="sourceLine" id="cb2-14" data-line-number="14"></a>
+<a class="sourceLine" id="cb2-15" data-line-number="15">    <span class="cf">return</span> set;</a>
+<a class="sourceLine" id="cb2-16" data-line-number="16">}</a>
+<a class="sourceLine" id="cb2-17" data-line-number="17"></a>
+<a class="sourceLine" id="cb2-18" data-line-number="18"><span class="dt">void</span> int_set_add(int_set_t* set, <span class="dt">uint64_t</span> n) {</a>
+<a class="sourceLine" id="cb2-19" data-line-number="19">    n -= set-&gt;min_bound;</a>
+<a class="sourceLine" id="cb2-20" data-line-number="20">    <span class="dt">uint64_t</span> o = n / <span class="dv">64</span>;</a>
+<a class="sourceLine" id="cb2-21" data-line-number="21">    <span class="dt">uint64_t</span> i = n % <span class="dv">64</span>;</a>
+<a class="sourceLine" id="cb2-22" data-line-number="22">    <span class="dt">uint64_t</span> mask = (<span class="dt">uint64_t</span>)<span class="dv">1</span> &lt;&lt; i;</a>
+<a class="sourceLine" id="cb2-23" data-line-number="23">    set-&gt;in_bounds[o] |= mask;</a>
+<a class="sourceLine" id="cb2-24" data-line-number="24">}</a>
+<a class="sourceLine" id="cb2-25" data-line-number="25"></a>
+<a class="sourceLine" id="cb2-26" data-line-number="26"><span class="dt">void</span> int_set_check(int_set_t* set, <span class="dt">uint64_t</span> n) {</a>
+<a class="sourceLine" id="cb2-27" data-line-number="27">    ...</a>
+<a class="sourceLine" id="cb2-28" data-line-number="28">}</a></code></pre></div>
+<p>Haskell has an excellent foreign function interface which allows us to compile and call C functions with minimal overhead<sup><a href="https://github.com/hverr/intset-compare/blob/master/src/Data/IntSet/FFI/C.hs">full code</a></sup>:</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb3-1" data-line-number="1"><span class="kw">data</span> <span class="dt">IntSetPtr</span></a>
+<a class="sourceLine" id="cb3-2" data-line-number="2"></a>
+<a class="sourceLine" id="cb3-3" data-line-number="3"><span class="kw">type</span> <span class="dt">IntSet</span> <span class="fu">=</span> <span class="dt">Ptr</span> <span class="dt">IntSetPtr</span></a>
+<a class="sourceLine" id="cb3-4" data-line-number="4"></a>
+<a class="sourceLine" id="cb3-5" data-line-number="5"><span class="fu">...</span></a>
+<a class="sourceLine" id="cb3-6" data-line-number="6"></a>
+<a class="sourceLine" id="cb3-7" data-line-number="7">foreign <span class="kw">import</span> ccall unsafe &quot;int_set_add&quot; c_int_set_add ::</a>
+<a class="sourceLine" id="cb3-8" data-line-number="8">    <span class="dt">IntSet</span></a>
+<a class="sourceLine" id="cb3-9" data-line-number="9"> <span class="ot">-&gt;</span> <span class="dt">CULong</span></a>
+<a class="sourceLine" id="cb3-10" data-line-number="10"> <span class="ot">-&gt;</span> <span class="dt">IO</span> ()</a>
+<a class="sourceLine" id="cb3-11" data-line-number="11"></a>
+<a class="sourceLine" id="cb3-12" data-line-number="12"><span class="ot">add ::</span> <span class="dt">IntSet</span> <span class="ot">-&gt;</span> <span class="dt">Word64</span> <span class="ot">-&gt;</span> <span class="dt">IO</span> ()</a>
+<a class="sourceLine" id="cb3-13" data-line-number="13">add s <span class="fu">=</span> c_int_set_add s <span class="fu">.</span> fromIntegral</a>
+<a class="sourceLine" id="cb3-14" data-line-number="14"></a>
+<a class="sourceLine" id="cb3-15" data-line-number="15"><span class="fu">...</span></a></code></pre></div>
+<p>We can now add our C implementation to the benchmarks:</p>
+<p><img src="/images/2018-07-30/plots/ffi.svg" /></p>
+<p>We immediately see that this straightforward imperative solution is orders of magnitude faster than our functional equivalents. Yet, it comes at a cost of maintaining some C code inside our Haskell application.</p>
+<h2 id="bit-vectors-in-haskell">Bit vectors in Haskell</h2>
+<p>Luckily, the imperative C code can quickly be translated to native Haskell code. GHC directly supports allocating, modifying and reading chunks of memory by exposing the <a href="https://hackage.haskell.org/package/base/docs/GHC-Exts.html">GHC.Exts</a> module. Directly using this module can be a bit daunting<a href="#fn5" class="footnote-ref" id="fnref5"><sup>5</sup></a>, but luckily the <a href="https://hackage.haskell.org/package/primitive">primitive</a> library provides a nice abstraction on top of GHC’s built-in byte arrays.</p>
+<p>Allocating and using memory can be done inside the <a href="https://hackage.haskell.org/package/primitive/docs/Control-Monad-Primitive.html#t:PrimMonad"><code class="sourceCode haskell"><span class="dt">PrimMonad</span></code></a>, which is mostly specialized to either <code class="sourceCode haskell"><span class="dt">IO</span></code> or <code class="sourceCode haskell"><span class="dt">ST</span></code>. Operations like <a href="https://hackage.haskell.org/package/primitive/docs/Data-Primitive-ByteArray.html#v:newByteArray"><code class="sourceCode haskell">newByteArray</code></a> or <a href="https://hackage.haskell.org/package/primitive/docs/Data-Primitive-ByteArray.html#v:writeByteArray"><code class="sourceCode haskell">writeByteArray</code></a> can be used to directly interact with raw memory. Translating the C code to Haskell is now rather straightforward<sup><a href="https://github.com/hverr/intset-compare/blob/master/src/Data/IntSet/NativeDiv.hs">full code</a></sup>.</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb4-1" data-line-number="1"><span class="kw">data</span> <span class="dt">IntSet</span> s <span class="fu">=</span> <span class="dt">IntSet</span> {</a>
+<a class="sourceLine" id="cb4-2" data-line-number="2">    intSetMinBound<span class="fu">#</span><span class="ot">  ::</span> <span class="ot">{-# UNPACK #-}</span> <span class="fu">!</span><span class="dt">Word64</span></a>
+<a class="sourceLine" id="cb4-3" data-line-number="3">  , intSetMaxBound<span class="fu">#</span><span class="ot">  ::</span> <span class="ot">{-# UNPACK #-}</span> <span class="fu">!</span><span class="dt">Word64</span></a>
+<a class="sourceLine" id="cb4-4" data-line-number="4">  , intSetInBounds<span class="fu">#</span><span class="ot">  ::</span> <span class="ot">{-# UNPACK #-}</span> <span class="fu">!</span>(<span class="dt">MutableByteArray</span> s)</a>
+<a class="sourceLine" id="cb4-5" data-line-number="5">  }</a>
+<a class="sourceLine" id="cb4-6" data-line-number="6"></a>
+<a class="sourceLine" id="cb4-7" data-line-number="7"></a>
+<a class="sourceLine" id="cb4-8" data-line-number="8"><span class="ot">new ::</span> <span class="dt">PrimMonad</span> m</a>
+<a class="sourceLine" id="cb4-9" data-line-number="9">    <span class="ot">=&gt;</span> <span class="dt">Word64</span> <span class="co">-- ^ Minimum bound of the integer set</span></a>
+<a class="sourceLine" id="cb4-10" data-line-number="10">    <span class="ot">-&gt;</span> <span class="dt">Word64</span> <span class="co">-- ^ Maximum bound of the integer set</span></a>
+<a class="sourceLine" id="cb4-11" data-line-number="11">    <span class="ot">-&gt;</span> m (<span class="dt">IntSet</span> (<span class="dt">PrimState</span> m))</a>
+<a class="sourceLine" id="cb4-12" data-line-number="12">new <span class="fu">!</span>minB <span class="fu">!</span>maxB <span class="fu">=</span> <span class="kw">do</span></a>
+<a class="sourceLine" id="cb4-13" data-line-number="13">    <span class="kw">let</span> <span class="fu">!</span>numInBounds <span class="fu">=</span> (maxB <span class="fu">-</span> minB) <span class="ot">`div`</span> <span class="dv">8</span> <span class="fu">+</span> <span class="dv">1</span></a>
+<a class="sourceLine" id="cb4-14" data-line-number="14">    set <span class="ot">&lt;-</span> newByteArray (fromIntegral numInBounds)</a>
+<a class="sourceLine" id="cb4-15" data-line-number="15">    fillByteArray set <span class="dv">0</span> (fromIntegral numInBounds) <span class="dv">0</span></a>
+<a class="sourceLine" id="cb4-16" data-line-number="16">    return <span class="fu">$!</span> <span class="dt">IntSet</span> {</a>
+<a class="sourceLine" id="cb4-17" data-line-number="17">        intSetMinBound<span class="fu">#</span>  <span class="fu">=</span> minB</a>
+<a class="sourceLine" id="cb4-18" data-line-number="18">      , intSetMaxBound<span class="fu">#</span>  <span class="fu">=</span> maxB</a>
+<a class="sourceLine" id="cb4-19" data-line-number="19">      , intSetInBounds<span class="fu">#</span>  <span class="fu">=</span> set</a>
+<a class="sourceLine" id="cb4-20" data-line-number="20">      }</a>
+<a class="sourceLine" id="cb4-21" data-line-number="21"><span class="ot">{-# SPECIALIZE new :: Word64 -&gt; Word64 -&gt; IO (IntSet (PrimState IO)) #-}</span></a>
+<a class="sourceLine" id="cb4-22" data-line-number="22"></a>
+<a class="sourceLine" id="cb4-23" data-line-number="23"><span class="ot">add ::</span> <span class="dt">PrimMonad</span> m <span class="ot">=&gt;</span> <span class="dt">IntSet</span> (<span class="dt">PrimState</span> m) <span class="ot">-&gt;</span> <span class="dt">Word64</span> <span class="ot">-&gt;</span> m ()</a>
+<a class="sourceLine" id="cb4-24" data-line-number="24">add <span class="fu">!</span>set <span class="fu">!</span>n <span class="fu">=</span></a>
+<a class="sourceLine" id="cb4-25" data-line-number="25">    <span class="kw">let</span> <span class="fu">!</span>n&#39;   <span class="fu">=</span> n <span class="fu">-</span> intSetMinBound<span class="fu">#</span> set</a>
+<a class="sourceLine" id="cb4-26" data-line-number="26">    <span class="kw">let</span> <span class="fu">!</span>o    <span class="fu">=</span> fromIntegral <span class="fu">$</span> n&#39; <span class="ot">`div`</span> <span class="dv">64</span></a>
+<a class="sourceLine" id="cb4-27" data-line-number="27">    <span class="kw">let</span> <span class="fu">!</span>i    <span class="fu">=</span> fromIntegral <span class="fu">$</span> n&#39; <span class="ot">`rem`</span> <span class="dv">64</span></a>
+<a class="sourceLine" id="cb4-28" data-line-number="28">    <span class="kw">let</span> <span class="fu">!</span>mask <span class="fu">=</span> (<span class="dv">1</span><span class="ot"> ::</span> <span class="dt">Word64</span>) <span class="ot">`shiftL`</span> i</a>
+<a class="sourceLine" id="cb4-29" data-line-number="29">    b <span class="ot">&lt;-</span> readByteArray (intSetInBounds<span class="fu">#</span> set) o</a>
+<a class="sourceLine" id="cb4-30" data-line-number="30">    <span class="kw">let</span> <span class="fu">!</span>b&#39; <span class="fu">=</span> b <span class="fu">.|.</span> mask</a>
+<a class="sourceLine" id="cb4-31" data-line-number="31">    writeByteArray (intSetInBounds<span class="fu">#</span> set) o b&#39;</a>
+<a class="sourceLine" id="cb4-32" data-line-number="32"><span class="ot">{-# SPECIALIZE add :: IntSet (PrimState IO) -&gt; Word64 -&gt; IO () #-}</span></a></code></pre></div>
+<p>In the code above we used the <code class="sourceCode haskell"><span class="dt">SPECIALIZE</span></code> compiler directive to instruct GHC to provide specialized function implementations for the <code class="sourceCode haskell"><span class="dt">IO</span></code> monad. This ensures that no type class dictionaries are passed around when calling these functions in the <code class="sourceCode haskell"><span class="dt">IO</span></code> monad. Our benchmark results are optimistic!</p>
+<p><img src="/images/2018-07-30/plots/native-div.svg" /></p>
+<h2 id="closing-the-gap">Closing the gap</h2>
+<p>We can see that our previous Haskell implementation competes with C, yet it is still about 2 to 3 times slower than the C implementation. Unfortunately, it is not immediately clear why. To discover the root cause of the difference in execution time we have to take a look at the code that GHC generates.</p>
+<p>When compiling Haskell code to an executable binary, <a href="https://ghc.haskell.org/trac/ghc/wiki/Commentary/Compiler/GeneratedCode">GHC uses many intermediate formats</a>, all the way from the Haskell code you write to the machine code that gets executed on the machine. When a performance deterioration cannot be explained by inspecting the Haskell code itself, we have to inspect either the Core<a href="#fn6" class="footnote-ref" id="fnref6"><sup>6</sup></a> code or the native assembly code. Luckily, the <a href="https://hackage.haskell.org/package/ghc-core">ghc-core tool</a> can be used to inspect both. In our case, comparing the assembly code generated by GCC for our C implementation and the assembly code generated by GHC for our Haskell implementation exposes the root problem. Can you spot it?</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode asm"><code class="sourceCode fasm"><a class="sourceLine" id="cb5-1" data-line-number="1"><span class="dv">$</span> <span class="bu">stack</span> install ghc-core</a>
+<a class="sourceLine" id="cb5-2" data-line-number="2"><span class="dv">$</span> <span class="bu">stack</span> exec ghc-core -- src/<span class="bu">Data</span>/IntSet/NativeDiv.hs</a>
+<a class="sourceLine" id="cb5-3" data-line-number="3">...</a>
+<a class="sourceLine" id="cb5-4" data-line-number="4"><span class="bu">Data</span>.IntSet.Native.<span class="dv">$</span>wadd_info:</a>
+<a class="sourceLine" id="cb5-5" data-line-number="5">  ...</a>
+<a class="sourceLine" id="cb5-6" data-line-number="6">  movl<span class="bn"> $64,</span>%<span class="kw">ebx</span></a>
+<a class="sourceLine" id="cb5-7" data-line-number="7">  <span class="bu">movq</span> %<span class="kw">rax</span>,%<span class="kw">rcx</span></a>
+<a class="sourceLine" id="cb5-8" data-line-number="8">  xorq %<span class="kw">rdx</span>,%<span class="kw">rdx</span></a>
+<a class="sourceLine" id="cb5-9" data-line-number="9">  divq %<span class="kw">rbx</span></a>
+<a class="sourceLine" id="cb5-10" data-line-number="10">  shrq<span class="bn"> $6,</span>%<span class="kw">rcx</span></a>
+<a class="sourceLine" id="cb5-11" data-line-number="11">  cmpq<span class="bn"> $64,</span>%<span class="kw">rdx</span></a>
+<a class="sourceLine" id="cb5-12" data-line-number="12">  ...</a>
+<a class="sourceLine" id="cb5-13" data-line-number="13">  movl<span class="bn"> $1,</span>%<span class="kw">eax</span></a>
+<a class="sourceLine" id="cb5-14" data-line-number="14">  <span class="bu">movq</span> %<span class="kw">rdx</span>,%<span class="kw">rcx</span></a>
+<a class="sourceLine" id="cb5-15" data-line-number="15">  shlq %<span class="kw">cl</span>,%<span class="kw">rax</span></a>
+<a class="sourceLine" id="cb5-16" data-line-number="16">  ...</a>
+<a class="sourceLine" id="cb5-17" data-line-number="17"></a>
+<a class="sourceLine" id="cb5-18" data-line-number="18"><span class="dv">$</span> gcc -S src-c/intset.c -o -</a>
+<a class="sourceLine" id="cb5-19" data-line-number="19">...</a>
+<a class="sourceLine" id="cb5-20" data-line-number="20"><span class="fu">_int_set_add_in_bounds:</span></a>
+<a class="sourceLine" id="cb5-21" data-line-number="21">  ...</a>
+<a class="sourceLine" id="cb5-22" data-line-number="22">  shrq<span class="bn">	$6, </span>%<span class="kw">rax</span></a>
+<a class="sourceLine" id="cb5-23" data-line-number="23">  <span class="bu">movq</span>	%<span class="kw">rax</span>, <span class="dv">-24</span>(%<span class="kw">rbp</span>)</a>
+<a class="sourceLine" id="cb5-24" data-line-number="24">  <span class="bu">movq</span>	<span class="dv">-48</span>(%<span class="kw">rbp</span>), %<span class="kw">rax</span></a>
+<a class="sourceLine" id="cb5-25" data-line-number="25">  andl<span class="bn">	$63, </span>%<span class="kw">eax</span></a>
+<a class="sourceLine" id="cb5-26" data-line-number="26">  <span class="bu">movq</span>	%<span class="kw">rax</span>, <span class="dv">-16</span>(%<span class="kw">rbp</span>)</a>
+<a class="sourceLine" id="cb5-27" data-line-number="27">  <span class="bu">movq</span>	<span class="dv">-16</span>(%<span class="kw">rbp</span>), %<span class="kw">rax</span></a>
+<a class="sourceLine" id="cb5-28" data-line-number="28">  movl<span class="bn">	$1, </span>%<span class="kw">edx</span></a>
+<a class="sourceLine" id="cb5-29" data-line-number="29">  movl	%<span class="kw">eax</span>, %<span class="kw">ecx</span></a>
+<a class="sourceLine" id="cb5-30" data-line-number="30">  salq	%<span class="kw">cl</span>, %<span class="kw">rdx</span></a>
+<a class="sourceLine" id="cb5-31" data-line-number="31">  ...</a></code></pre></div>
+<p>GHC has not optimized the remainder operation when the second operand is a multiple of 2. It uses the <code>div</code> instruction in the check and add functions, while GCC has replaced this instruction by a <code>shift</code> and an <code>and</code> instruction, as <code>div</code> instructions are relatively expensive on most CPUs.</p>
+<p>Manually using the bitwise operators from <a href="http://hackage.haskell.org/package/base/docs/Data-Bits.html">Data.Bits</a> in our Haskell code, makes GHC generate the correct instructions<sup><a href="https://github.com/hverr/intset-compare/blob/master/src/Data/IntSet/Native.hs">full code</a></sup>:</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb6-1" data-line-number="1"><span class="ot">add ::</span> <span class="dt">PrimMonad</span> m <span class="ot">=&gt;</span> <span class="dt">IntSet</span> (<span class="dt">PrimState</span> m) <span class="ot">-&gt;</span> <span class="dt">Word64</span> <span class="ot">-&gt;</span> m ()</a>
+<a class="sourceLine" id="cb6-2" data-line-number="2">add <span class="fu">!</span>set <span class="fu">!</span>n <span class="fu">=</span></a>
+<a class="sourceLine" id="cb6-3" data-line-number="3">    <span class="kw">let</span> <span class="fu">!</span>n&#39;   <span class="fu">=</span> n <span class="fu">-</span> intSetMinBound<span class="fu">#</span> set</a>
+<a class="sourceLine" id="cb6-4" data-line-number="4">    <span class="kw">let</span> <span class="fu">!</span>o    <span class="fu">=</span> fromIntegral <span class="fu">$</span> n&#39; <span class="ot">`shiftR`</span> <span class="dv">6</span></a>
+<a class="sourceLine" id="cb6-5" data-line-number="5">    <span class="kw">let</span> <span class="fu">!</span>i    <span class="fu">=</span> fromIntegral <span class="fu">$</span> n&#39; <span class="fu">.&amp;.</span> <span class="dv">63</span></a>
+<a class="sourceLine" id="cb6-6" data-line-number="6">    <span class="kw">let</span> <span class="fu">!</span>mask <span class="fu">=</span> (<span class="dv">1</span><span class="ot"> ::</span> <span class="dt">Word64</span>) <span class="ot">`shiftL`</span> i</a>
+<a class="sourceLine" id="cb6-7" data-line-number="7">    <span class="fu">...</span></a></code></pre></div>
+<p><strong>Now, our Haskell implementation is really as fast as C!</strong></p>
+<p><img src="/images/2018-07-30/plots/native-fast.svg" /></p>
+<h2 id="conclusion">Conclusion</h2>
+<p>There will always be a fundamental mismatch between functional programming and fast imperative data structures. However, Haskell definitely offers enough support for low-level implementations of such data structures, without the need to call into foreign code written in traditional low-level imperative languages.</p>
+<section class="footnotes">
+<hr />
+<ol>
+<li id="fn1"><p>The array of numbers is randomly generated for a specific range and has the same size as that range. However, when generating random numbers duplicates are allowed, which means that we expect that about 63% of all numbers in the range will eventually be added to the set.<a href="#fnref1" class="footnote-back">↩</a></p></li>
+<li id="fn2"><p>Nievergelt, J. and Reingold, E.M., 1973. Binary search trees of bounded balance. <em>SIAM journal on Computing, 2(1)</em>, pp.33-43.<a href="#fnref2" class="footnote-back">↩</a></p></li>
+<li id="fn3"><p>Okasaki, C. and Gill, A., 1998, September. Fast mergeable integer maps. In <em>Workshop on ML</em> (pp. 77-86).<a href="#fnref3" class="footnote-back">↩</a></p></li>
+<li id="fn4"><p>Adding support for numbers that are out of range can be done in a relatively simple way. The full source code uses a simple hash table with chaining.<a href="#fnref4" class="footnote-back">↩</a></p></li>
+<li id="fn5"><p>Directly using the <a href="https://hackage.haskell.org/package/base/docs/GHC-Exts.html">GHC.Exts</a> module is not only daunting<sup><a href="https://github.com/hverr/intset-compare/blob/master/src/Data/IntSet/GHC.hs">code</a></sup>, but also does not improve performance<sup><a href="/images/2018-07-30/plots/ghc.svg">figure</a></sup>.<a href="#fnref5" class="footnote-back">↩</a></p></li>
+<li id="fn6"><p>We will not be inspecting any Core in this blog post. However, it is very readable as it looks a lot like regular Haskell. Run the provided <code>ghc-core</code> command to take a look at it!<a href="#fnref6" class="footnote-back">↩</a></p></li>
+</ol>
+</section>
+</article>
+]]></summary>
+</entry>
+<entry>
+    <title>Using Servant to orchestrate LXD containers</title>
+    <link href="https://deliquus.com/posts/2017-10-02-using-servant-to-orchestrate-lxd-containers.html" />
+    <id>https://deliquus.com/posts/2017-10-02-using-servant-to-orchestrate-lxd-containers.html</id>
+    <published>2017-10-02T00:00:00Z</published>
+    <updated>2017-10-02T00:00:00Z</updated>
+    <summary type="html"><![CDATA[<p>Posted on October  2, 2017  - <a href="https://www.reddit.com/r/haskell/comments/758c7u/using_servant_to_orchestrate_lxd_containers/?ref=share&ref_source=link">Discussion</a>  - <a href="/">All posts</a></p>
+<p><i>By Henri Verroken</i></p>
+<article>
+  <p>The <a href="https://hackage.haskell.org/package/lxd-client">lxd-client</a> package is a client library for the LXD daemon written in Haskell. It provides a high-level Haskell interface to communicate with the LXD daemon, which allows you to launch and configure VM-like containers, create images, manage networks and volumes, and many other things. This blog post explains how the <a href="https://haskell-servant.github.io/">servant</a> libraries are used to create a non-trivial type-safe HTTP/WebSockets client and discusses the efforts involved.</p>
+<!--more-->
+<h2 id="what-is-lxd">What is LXD?</h2>
+<p>LXD is a container manager, which uses LXC under the hood. It offers a user experience similar to a virtual machine hypervisor but uses Linux containers to provide the isolation. LXD exposes a REST API over a local unix socket and over HTTPS, allowing any type of client to manage containers, images and other configuration objects. <a href="https://linuxcontainers.org/lxd/introduction/">LXD’s home page</a> provides more information and excellent tutorials.</p>
+<p>Some of the more important features of LXD are listed below, directly taken from <a href="https://linuxcontainers.org/lxd/introduction/">LXD’s home page</a>:</p>
+<ul>
+<li>Image based, with a variety of Linux distributions published daily.</li>
+<li>Support for cross-host container and image transfer, including live migration.</li>
+<li>Advanced resource control for cpu, memory, network I/O, block I/O, disk usage and kernel resources.</li>
+<li>Device passthrough for USB, GPU, unix character and block devices, NICs, disks and paths.</li>
+<li>Network management</li>
+<li>Storage management with support for multiple storage backends, pools and volumes.</li>
+</ul>
+<h2 id="building-a-haskell-client">Building a Haskell client</h2>
+<p>The LXD daemon exposes a REST-like API that allows you to fully manage all LXD resources. A standard command line utility is provided to manage LXD daemons, but the <a href="https://hackage.haskell.org/package/lxd-client">lxd-client</a> package allows you to go beyond the command line interface. Using the package, you can leverage the power of Haskell when orchestrating LXD containers, both on a local host and on remote hosts.</p>
+<p>This blog post discusses how the <a href="https://hackage.haskell.org/package/lxd-client">lxd-client</a> package leverages Servant to quickly build a type-safe low-level interface for the LXD API. This low-level interface is actually wrapped by a high-level interface. A code example showing off the final product can be found below. The high-level interface won’t be discussed any further, but the <a href="https://hackage.haskell.org/package/lxd-client-0.1.0.2/docs/Network-LXD-Client-Commands.html">Haddock documentation</a> provides an overview on how to start using the high-level interface.</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb1-1" data-line-number="1"><span class="ot">{-# LANGUAGE OverloadedStrings #-}</span></a>
+<a class="sourceLine" id="cb1-2" data-line-number="2"><span class="kw">module</span> <span class="dt">Main</span> <span class="kw">where</span></a>
+<a class="sourceLine" id="cb1-3" data-line-number="3"></a>
+<a class="sourceLine" id="cb1-4" data-line-number="4"><span class="kw">import</span> <span class="dt">Control.Monad.IO.Class</span> (liftIO)</a>
+<a class="sourceLine" id="cb1-5" data-line-number="5"><span class="kw">import</span> <span class="dt">Network.LXD.Client.Commands</span></a>
+<a class="sourceLine" id="cb1-6" data-line-number="6"></a>
+<a class="sourceLine" id="cb1-7" data-line-number="7"><span class="ot">main ::</span> <span class="dt">IO</span> ()</a>
+<a class="sourceLine" id="cb1-8" data-line-number="8">main <span class="fu">=</span> runWithLocalHost def <span class="fu">$</span> <span class="kw">do</span></a>
+<a class="sourceLine" id="cb1-9" data-line-number="9">    liftIO <span class="fu">$</span> putStrLn <span class="st">&quot;Creating my-container&quot;</span></a>
+<a class="sourceLine" id="cb1-10" data-line-number="10">    lxcCreate <span class="fu">.</span> containerCreateRequest <span class="st">&quot;my-container&quot;</span></a>
+<a class="sourceLine" id="cb1-11" data-line-number="11">              <span class="fu">.</span> <span class="dt">ContainerSourceRemote</span></a>
+<a class="sourceLine" id="cb1-12" data-line-number="12">              <span class="fu">$</span> remoteImage imagesRemote <span class="st">&quot;ubuntu/xenial/amd64&quot;</span></a>
+<a class="sourceLine" id="cb1-13" data-line-number="13"></a>
+<a class="sourceLine" id="cb1-14" data-line-number="14">    liftIO <span class="fu">$</span> putStrLn <span class="st">&quot;Starting my-container&quot;</span></a>
+<a class="sourceLine" id="cb1-15" data-line-number="15">    lxcStart <span class="st">&quot;my-container&quot;</span></a>
+<a class="sourceLine" id="cb1-16" data-line-number="16"></a>
+<a class="sourceLine" id="cb1-17" data-line-number="17">    liftIO <span class="fu">$</span> putStrLn <span class="st">&quot;Stopping my-container&quot;</span></a>
+<a class="sourceLine" id="cb1-18" data-line-number="18">    lxcStop <span class="st">&quot;my-container&quot;</span> <span class="dt">False</span></a>
+<a class="sourceLine" id="cb1-19" data-line-number="19"></a>
+<a class="sourceLine" id="cb1-20" data-line-number="20">    liftIO <span class="fu">$</span> putStrLn <span class="st">&quot;Deleting my-container&quot;</span></a>
+<a class="sourceLine" id="cb1-21" data-line-number="21">    lxcDelete <span class="st">&quot;my-container&quot;</span></a></code></pre></div>
+<h2 id="leveraging-servant-to-rapidly-describe-a-large-api.">Leveraging Servant to rapidly describe a large API.</h2>
+<p>The LXD REST API is quite big, yet well structured, and rather well <a href="https://github.com/lxc/lxd/blob/master/doc/rest-api.md">documented on GitHub</a>. The API exposes quite a lot of <a href="https://github.com/lxc/lxd/blob/master/doc/rest-api.md#api-structure">endpoints</a>, of which some are listed below.</p>
+<pre><code>/1.0
++-- /1.0/certificates
+|   +-- /1.0/certificates/&lt;fingerprint&gt;
++-- /1.0/containers
+|   +-- /1.0/containers/&lt;name&gt;
+|       +-- /1.0/containers/&lt;name&gt;/exec
+|       +-- /1.0/containers/&lt;name&gt;/files
+|       +-- /1.0/containers/&lt;name&gt;/state
+|       +-- ...
++ -- /1.0/events
++ -- /1.0/images
+|    +-- /1.0/images/&lt;fingerprint&gt;
+|    |   +-- /1.0/images/&lt;fingerprint&gt;/export
+|    |   +-- /1.0/images/&lt;fingerprint&gt;/refresh
+|    +  /1.0/images/aliases
+|       + -- /1.0/images/aliases/&lt;name&gt;
++ ...</code></pre>
+<p><a href="https://haskell-servant.github.io/">Servant</a> is a type-level DSL for describing both server and client APIs using Haskell types. By specifying the API at the type-level, Servant takes a way a lot of the boilerplate you’d otherwise have to write manually. It handles encoding and dispatching requests, as well as receiving and properly decoding responses, using your custom JSON-enabled types. An <a href="https://haskell-servant.github.io/client-in-5-minutes.html">excellent tutorial</a> is provided by Servant itself.</p>
+<h3 id="lxd-api-responses">LXD API responses</h3>
+<p>Let’s start by describing the <a href="https://github.com/lxc/lxd/blob/master/doc/rest-api.md#return-values">response objects returned by the LXD API</a>. Each endpoint replies with either a synchronous or an asynchronous response object. A synchronous response immediately returns the requested information, while an asynchronous response first starts an operation in the background and returns an operation ID, which can be used to track its progress.</p>
+<p>We’ll define a data type <a href="https://hackage.haskell.org/package/lxd-client-0.1.0.2/docs/Network-LXD-Client-Types.html#t:GenericResponse"><code class="sourceCode haskell"><span class="dt">GenericResponse</span></code></a> to describe both response types, which happen to share a lot of fields. It has two type parameters: <code>op</code> describes the operation ID of the response, while <code>a</code> describes the actual data returned by the request.</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb3-1" data-line-number="1"><span class="co">-- | Generic LXD API response object.</span></a>
+<a class="sourceLine" id="cb3-2" data-line-number="2"><span class="kw">data</span> <span class="dt">GenericResponse</span> op a <span class="fu">=</span> <span class="dt">Response</span> {</a>
+<a class="sourceLine" id="cb3-3" data-line-number="3"><span class="ot">    responseType ::</span> <span class="dt">ResponseType</span></a>
+<a class="sourceLine" id="cb3-4" data-line-number="4">  ,<span class="ot"> status ::</span> <span class="dt">String</span></a>
+<a class="sourceLine" id="cb3-5" data-line-number="5">  ,<span class="ot"> statusCode ::</span> <span class="dt">StatusCode</span></a>
+<a class="sourceLine" id="cb3-6" data-line-number="6">  ,<span class="ot"> responseOperation ::</span> op</a>
+<a class="sourceLine" id="cb3-7" data-line-number="7">  ,<span class="ot"> errorCode ::</span> <span class="dt">Int</span></a>
+<a class="sourceLine" id="cb3-8" data-line-number="8">  ,<span class="ot"> error ::</span> <span class="dt">String</span></a>
+<a class="sourceLine" id="cb3-9" data-line-number="9">  ,<span class="ot"> metadata ::</span> a</a>
+<a class="sourceLine" id="cb3-10" data-line-number="10">} <span class="kw">deriving</span> (<span class="dt">Show</span>)</a>
+<a class="sourceLine" id="cb3-11" data-line-number="11"></a>
+<a class="sourceLine" id="cb3-12" data-line-number="12"><span class="kw">instance</span> (<span class="dt">FromJSON</span> op, <span class="dt">FromJSON</span> a) <span class="ot">=&gt;</span> <span class="dt">FromJSON</span> (<span class="dt">GenericResponse</span> op a) <span class="kw">where</span></a>
+<a class="sourceLine" id="cb3-13" data-line-number="13">    parseJSON <span class="fu">=</span> withObject <span class="st">&quot;Response&quot;</span> <span class="fu">$</span> \v <span class="ot">-&gt;</span> <span class="dt">Response</span></a>
+<a class="sourceLine" id="cb3-14" data-line-number="14">        <span class="fu">&lt;$&gt;</span> v <span class="fu">.:</span> <span class="st">&quot;type&quot;</span> <span class="fu">&lt;*&gt;</span> v <span class="fu">.:</span> <span class="st">&quot;status&quot;</span> <span class="fu">&lt;*&gt;</span> v <span class="fu">.:</span> <span class="st">&quot;status_code&quot;</span></a>
+<a class="sourceLine" id="cb3-15" data-line-number="15">        <span class="fu">&lt;*&gt;</span> v <span class="fu">.:</span> <span class="st">&quot;operation&quot;</span> <span class="fu">&lt;*&gt;</span> v <span class="fu">.:</span> <span class="st">&quot;error_code&quot;</span> <span class="fu">&lt;*&gt;</span> v <span class="fu">.:</span> <span class="st">&quot;error&quot;</span></a>
+<a class="sourceLine" id="cb3-16" data-line-number="16">        <span class="fu">&lt;*&gt;</span> v <span class="fu">.:</span> <span class="st">&quot;metadata&quot;</span></a></code></pre></div>
+<p>A synchronous <a href="https://hackage.haskell.org/package/lxd-client-0.1.0.2/docs/Network-LXD-Client-Types.html#t:Response"><code class="sourceCode haskell"><span class="dt">Response</span></code></a> is a generic response without an operation ID and user-specified return data. An <a href="https://hackage.haskell.org/package/lxd-client-0.1.0.2/docs/Network-LXD-Client-Types.html#t:AsyncResponse"><code class="sourceCode haskell"><span class="dt">AsyncResponse</span></code></a> is a generic response with an operation ID of type <a href="https://hackage.haskell.org/package/lxd-client-0.1.0.2/docs/Network-LXD-Client-Types.html#t:OperationId"><code class="sourceCode haskell"><span class="dt">OperationId</span></code></a>. Its return data contains more information about the operation, described by the <a href="https://hackage.haskell.org/package/lxd-client-0.1.0.2/docs/Network-LXD-Client-Types.html#t:BackgroundOperation"><code class="sourceCode haskell"><span class="dt">BackgroundOperation</span></code></a> data type.</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb4-1" data-line-number="1"><span class="co">-- | LXD API synchronous response object, without resulting operation.</span></a>
+<a class="sourceLine" id="cb4-2" data-line-number="2"><span class="kw">type</span> <span class="dt">Response</span> a <span class="fu">=</span> <span class="dt">GenericResponse</span> <span class="dt">String</span> a</a>
+<a class="sourceLine" id="cb4-3" data-line-number="3"></a>
+<a class="sourceLine" id="cb4-4" data-line-number="4"><span class="co">-- | LXD API asynchronous response object, with resulting operation</span></a>
+<a class="sourceLine" id="cb4-5" data-line-number="5"><span class="kw">type</span> <span class="dt">AsyncResponse</span> a <span class="fu">=</span> <span class="dt">GenericResponse</span> <span class="dt">OperationId</span> (<span class="dt">BackgroundOperation</span> a)</a></code></pre></div>
+<h3 id="our-first-endpoint">Our first endpoint</h3>
+<p>We almost have enough types to specify the <code>/1.0/containers</code> endpoint. This endpoint simply returns a list of existing containers, like this:</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode json"><code class="sourceCode json"><a class="sourceLine" id="cb5-1" data-line-number="1"><span class="ot">[</span></a>
+<a class="sourceLine" id="cb5-2" data-line-number="2">    <span class="st">&quot;/1.0/containers/blah&quot;</span><span class="ot">,</span></a>
+<a class="sourceLine" id="cb5-3" data-line-number="3">    <span class="st">&quot;/1.0/containers/blah1&quot;</span></a>
+<a class="sourceLine" id="cb5-4" data-line-number="4"><span class="ot">]</span></a></code></pre></div>
+<p>We declare a convenience type <a href="https://hackage.haskell.org/package/lxd-client-0.1.0.2/docs/Network-LXD-Client-Types.html#t:ContainerName"><code class="sourceCode haskell"><span class="dt">ContainerName</span></code></a> that extracts the container name by newtype-wrapping a string.</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb6-1" data-line-number="1"><span class="co">-- | LXD container name.</span></a>
+<a class="sourceLine" id="cb6-2" data-line-number="2"><span class="kw">newtype</span> <span class="dt">ContainerName</span> <span class="fu">=</span> <span class="dt">ContainerName</span> <span class="dt">String</span> <span class="kw">deriving</span> (<span class="dt">Eq</span>, <span class="dt">Show</span>)</a>
+<a class="sourceLine" id="cb6-3" data-line-number="3"></a>
+<a class="sourceLine" id="cb6-4" data-line-number="4"><span class="kw">instance</span> <span class="dt">FromJSON</span> <span class="dt">ContainerName</span> <span class="kw">where</span></a>
+<a class="sourceLine" id="cb6-5" data-line-number="5">    parseJSON <span class="fu">=</span> withText <span class="st">&quot;ContainerName&quot;</span> <span class="fu">$</span> \text <span class="ot">-&gt;</span></a>
+<a class="sourceLine" id="cb6-6" data-line-number="6">        <span class="kw">let</span> prefix <span class="fu">=</span> <span class="st">&quot;/1.0/containers/&quot;</span> <span class="kw">in</span></a>
+<a class="sourceLine" id="cb6-7" data-line-number="7">        <span class="kw">case</span> stripPrefix prefix (unpack text) <span class="kw">of</span></a>
+<a class="sourceLine" id="cb6-8" data-line-number="8">            <span class="dt">Nothing</span> <span class="ot">-&gt;</span> fail <span class="fu">$</span> <span class="st">&quot;could not parse container name: no prefix &quot;</span> <span class="fu">++</span> prefix</a>
+<a class="sourceLine" id="cb6-9" data-line-number="9">            <span class="dt">Just</span> name <span class="ot">-&gt;</span> return <span class="fu">$</span> <span class="dt">ContainerName</span> name</a>
+<a class="sourceLine" id="cb6-10" data-line-number="10"></a>
+<a class="sourceLine" id="cb6-11" data-line-number="11"><span class="kw">instance</span> <span class="dt">ToJSON</span> <span class="dt">ContainerName</span>        <span class="kw">where</span> toJSON (<span class="dt">ContainerName</span> name) <span class="fu">=</span> toJSON name</a>
+<a class="sourceLine" id="cb6-12" data-line-number="12"><span class="kw">instance</span> <span class="dt">IsString</span> <span class="dt">ContainerName</span>      <span class="kw">where</span> fromString <span class="fu">=</span> <span class="dt">ContainerName</span></a>
+<a class="sourceLine" id="cb6-13" data-line-number="13"><span class="kw">instance</span> <span class="dt">ToHttpApiData</span> <span class="dt">ContainerName</span> <span class="kw">where</span> toUrlPiece (<span class="dt">ContainerName</span> name) <span class="fu">=</span> pack name</a></code></pre></div>
+<p>We can now describe our first endpoint using the Servant type-level DSL. Quickly adding a <a href="https://hackage.haskell.org/package/lxd-client-0.1.0.2/docs/Network-LXD-Client-Types.html#t:Container"><code class="sourceCode haskell"><span class="dt">Container</span></code></a> data type allows us to also query the <code>/1.0/containers/&lt;name&gt;</code> endpoint, which provides information about the specified container.</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb7-1" data-line-number="1"><span class="kw">type</span> <span class="dt">API</span> <span class="fu">=</span> <span class="st">&quot;1.0&quot;</span> <span class="fu">:&gt;</span> <span class="st">&quot;containers&quot;</span> <span class="fu">:&gt;</span> <span class="dt">Get</span> <span class="ch">&#39;[JSON] (Response [ContainerName])</span></a>
+<a class="sourceLine" id="cb7-2" data-line-number="2">      <span class="fu">:&lt;|&gt;</span> <span class="st">&quot;1.0&quot;</span> <span class="fu">:&gt;</span> <span class="st">&quot;containers&quot;</span> <span class="fu">:&gt;</span> <span class="dt">Capture</span> <span class="st">&quot;name&quot;</span> <span class="dt">ContainerName</span> <span class="fu">:&gt;</span> <span class="dt">Get</span> <span class="ch">&#39;[JSON] (Response Container)</span></a></code></pre></div>
+<p>Path components are separated by the <code class="sourceCode haskell"><span class="fu">:&gt;</span></code> operator, while constant symbols like <code class="sourceCode haskell"><span class="st">&quot;1.0&quot;</span></code> and <code class="sourceCode haskell"><span class="st">&quot;containers&quot;</span></code> specify fixed path components. <code class="sourceCode haskell"><span class="dt">Capture</span></code> captures a variable path component, while <code class="sourceCode haskell"><span class="dt">Get</span></code> describes the structure of the response. In our case the response content type is JSON, which should be deserialized in a synchronous <a href="https://hackage.haskell.org/package/lxd-client-0.1.0.2/docs/Network-LXD-Client-Types.html#t:Response"><code class="sourceCode haskell"><span class="dt">Response</span></code></a> object.</p>
+<h3 id="other-endpoints">Other endpoints</h3>
+<p>As we have seen in the previous section, we only need to declare suitable data types and <code class="sourceCode haskell"><span class="dt">FromJSON</span></code> and <code class="sourceCode haskell"><span class="dt">ToJSON</span></code> instances to describe an API endpoint. For the LXD endpoint all data types are implemented in the <a href="https://hackage.haskell.org/package/lxd-client-0.1.0.2/docs/Network-LXD-Client-Types.html">Network.LXD.Client.Types</a> module, while the full <code class="sourceCode haskell"><span class="dt">API</span></code> is declared in the <a href="https://github.com/hverr/haskell-lxd-client/blob/3802b789bee3b4ccf505febdc9b282e07fd97d65/src/Network/LXD/Client/API.hs#L127">Network.LXD.Client.API</a> module.</p>
+<p>Following these links, you’ll see that a lot of types and a lot of Servant endpoint specifications are needed to describe the full LXD API. This task is <b>quite repetitive, yet it is very robust against errors</b> and allows you to <b>quickly</b> and more importantly <b>correctly describe a large REST-like API</b>.</p>
+<h2 id="querying-the-servant-api.">Querying the Servant API.</h2>
+<p>The <code class="sourceCode haskell"><span class="dt">API</span></code> type we declared earlier, successfully describes the LXD daemon API. But now, we also want to query it. Luckily, the Servant project also includes the <a href="https://hackage.haskell.org/package/servant-client">servant-client</a> library. This library can automatically generate regular Haskell functions from our <code class="sourceCode haskell"><span class="dt">API</span></code> type.</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb8-1" data-line-number="1"><span class="ot">api ::</span> <span class="dt">Proxy</span> <span class="dt">API</span></a>
+<a class="sourceLine" id="cb8-2" data-line-number="2">api <span class="fu">=</span> <span class="dt">Proxy</span></a>
+<a class="sourceLine" id="cb8-3" data-line-number="3"></a>
+<a class="sourceLine" id="cb8-4" data-line-number="4"><span class="ot">containerNames ::</span> <span class="dt">ClientM</span> (<span class="dt">Response</span> [<span class="dt">ContainerName</span>])</a>
+<a class="sourceLine" id="cb8-5" data-line-number="5"><span class="ot">container      ::</span> <span class="dt">ContainerName</span> <span class="ot">-&gt;</span> <span class="dt">ClientM</span> (<span class="dt">Response</span> <span class="dt">Container</span>)</a>
+<a class="sourceLine" id="cb8-6" data-line-number="6"></a>
+<a class="sourceLine" id="cb8-7" data-line-number="7">containerNames <span class="fu">:&lt;|&gt;</span> container <span class="fu">=</span> client api</a></code></pre></div>
+<p>We declare two functions <code class="sourceCode haskell">containerNames</code> and <code class="sourceCode haskell">container</code>, of which the type signatures closely resemble the Servant specification of the API endpoint. Their definition is provided by the <a href="https://hackage.haskell.org/package/servant-client-0.11/docs/Servant-Client.html#v:client"><code class="sourceCode haskell">client</code></a> function provided by the <a href="https://hackage.haskell.org/package/servant-client">servant-client</a> library. It simply takes a proxy of our <code class="sourceCode haskell"><span class="dt">API</span></code> type, and automatically provides an implementation for our functions. In reality the list of functions is of course <a href="https://github.com/hverr/haskell-lxd-client/blob/3802b789bee3b4ccf505febdc9b282e07fd97d65/src/Network/LXD/Client/API.hs#L178">quite a bit longer</a>.</p>
+<p>The <code class="sourceCode haskell">containerNames</code> and <code class="sourceCode haskell">container</code> functions, return a result in the <a href="https://hackage.haskell.org/package/servant-client-0.11/docs/Servant-Client.html#t:ClientM"><code class="sourceCode haskell"><span class="dt">ClientM</span></code></a> monad. You can run these functions by using <a href="https://hackage.haskell.org/package/servant-client-0.11/docs/Servant-Client.html#v:runClientM"><code class="sourceCode haskell">runClientM</code></a>.</p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb9-1" data-line-number="1"><span class="ot">runClientM ::</span> <span class="dt">ClientM</span> a <span class="ot">-&gt;</span> <span class="dt">ClientEnv</span> <span class="ot">-&gt;</span> <span class="dt">IO</span> (<span class="dt">Either</span> <span class="dt">ServantError</span> a)</a>
+<a class="sourceLine" id="cb9-2" data-line-number="2">runClientM <span class="fu">=</span> <span class="fu">...</span></a>
+<a class="sourceLine" id="cb9-3" data-line-number="3"></a>
+<a class="sourceLine" id="cb9-4" data-line-number="4">main <span class="fu">=</span> <span class="kw">do</span></a>
+<a class="sourceLine" id="cb9-5" data-line-number="5">  response <span class="ot">&lt;-</span> runClientM containerNames myEnv</a>
+<a class="sourceLine" id="cb9-6" data-line-number="6">  print response</a></code></pre></div>
+<h2 id="connecting-to-the-lxd-instance.">Connecting to the LXD instance.</h2>
+<p>Servant allows you to describe the API itself, but not how to connect to the API endpoint. As you can see in the previous example, the <a href="https://hackage.haskell.org/package/servant-client-0.11/docs/Servant-Client.html#v:runClientM"><code class="sourceCode haskell">runClientM</code></a> function takes a <a href="https://hackage.haskell.org/package/servant-client-0.11/docs/Servant-Client.html#t:ClientEnv"><code class="sourceCode haskell"><span class="dt">ClientEnv</span></code></a> object, which takes a base URL and a HTTP connection <a href="https://hackage.haskell.org/package/http-client-0.5.6.1/docs/N"><code class="sourceCode haskell"><span class="dt">Manager</span></code></a> from the <a href="https://hackage.haskell.org/package/http-client-0.5.6.1/docs/Network-HTTP-Client.html">Network.HTTP.Client</a> module.</p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb10-1" data-line-number="1"><span class="kw">data</span> <span class="dt">ClientEnv</span> <span class="fu">=</span> <span class="dt">ClientEnv</span> {<span class="ot"> manager ::</span> <span class="dt">Manager</span></a>
+<a class="sourceLine" id="cb10-2" data-line-number="2">                           ,<span class="ot"> baseUrl ::</span> <span class="dt">BaseUrl</span> }</a></code></pre></div>
+<p>Convenience functions exist to create managers for standard HTTP and HTTPS clients, but LXD uses either unix sockets or self-signed HTTPS with public key client authentication. This requires us to construct a custom <a href="https://hackage.haskell.org/package/http-client-0.5.6.1/docs/N"><code class="sourceCode haskell"><span class="dt">Manager</span></code></a> from low-level building blocks.</p>
+<p>The <a href="https://hackage.haskell.org/package/lxd-client-0.1.0.2/docs/Network-LXD-Client.html">Network.LXD.Client</a> module can be used to construct these custom <a href="https://hackage.haskell.org/package/http-client-0.5.6.1/docs/N"><code class="sourceCode haskell"><span class="dt">Manager</span></code></a>s to connect to local and remote LXD instances, providing the correct client certificates for authentication and verifying the self-signed LXD HTTPS certificates.</p>
+<p>The <a href="https://hackage.haskell.org/package/lxd-client-0.1.0.2/docs/Network-LXD-Client.html#v:localHostClient"><code class="sourceCode haskell">localHostClient</code></a> and <a href="https://hackage.haskell.org/package/lxd-client-0.1.0.2/docs/Network-LXD-Client.html#v:remoteHostClient"><code class="sourceCode haskell">remoteHostClient</code></a> functions return appropriate <a href="https://hackage.haskell.org/package/servant-client-0.11/docs/Servant-Client.html#t:ClientEnv"><code class="sourceCode haskell"><span class="dt">ClientEnv</span></code></a> objects. If you require a high level of control on how Servant-enabled client connections are established, the source of the <a href="https://hackage.haskell.org/package/lxd-client-0.1.0.2/docs/Network-LXD-Client.html">Network.LXD.Client</a> might be of interest to you.</p>
+<h2 id="conclusion">Conclusion</h2>
+<p>Servant is an excellent tool to quickly build a robust client for a REST-like API. It consists of three phases:</p>
+<ol type="1">
+<li>Implementing the necessary data types that describe the information content of the API.</li>
+<li>Describe the endpoints and declare function signatures using those data types and the Servant type-level DSL.</li>
+<li>Provide functions that allow Servant to actually connect to the API endpoints using a suitable transport layer protocol.</li>
+</ol>
+<p>The result is a robust, easy-to-use and type-safe client, that can be used to safely interact with the API. Of course, many APIs will not only use plain HTTP requests for interaction. For example, connections to some LXD API endpoints are upgraded to a WebSockets connection. Servant is not capable of interacting with these endpoints, requiring custom application logic, but this is out of scope for this blog post.</p>
+</article>
+]]></summary>
+</entry>
+<entry>
+    <title>Haskey: User-defined Schemas, Monad Transformers and Future Work (Summer of Haskell 2017)</title>
+    <link href="https://deliquus.com/posts/2017-09-14-haskey-user-defined-schemas-and-monad-transformers.html" />
+    <id>https://deliquus.com/posts/2017-09-14-haskey-user-defined-schemas-and-monad-transformers.html</id>
+    <published>2017-09-14T00:00:00Z</published>
+    <updated>2017-09-14T00:00:00Z</updated>
+    <summary type="html"><![CDATA[<p>Posted on September 14, 2017  - <a href="https://www.reddit.com/r/haskell/comments/709l8i/haskey_userdefined_schemas_monad_transformers_and/?ref=share&ref_source=link">Discussion</a>  - <a href="/">All posts</a></p>
+<p><i>By Henri Verroken and Steven Keuchel</i></p>
+<article>
+  <p>In this blog post we present the features we’ve added to <a href="https://github.com/haskell-haskey">Haskey</a> during the last weeks of the <a href="https://summer.haskell.org/news/2017-05-24-accepted-projects.html">Summer of Haskell project</a>. These features include user-defined schemas, multi-table support and a monad transformer that supports Haskey transactions. They are vital for the usability of Haskey, which means Haskey can finally be experimentally incorporated in serious projects. We also believe that the inclusion of these features provide the necessary functionality for Haskey to be a successful project in the context of <a href="https://summer.haskell.org/news/2017-05-24-accepted-projects.html">Summer of Haskell 2017</a>.</p>
+<!--more-->
+<p><a href="https://github.com/haskell-haskey">Haskey</a> is an ACID compliant embedded key-value store entirely written in Haskell. It was developed as part of the <a href="https://summer.haskell.org/news/2017-05-24-accepted-projects.html">Summer of Haskell 2017</a>. This blog post is a follow-up to the previous blog post on Haskey: <a href="/posts/2017-08-24-introducing-haskey.html"><em>Introducing Haskey</em></a>. Along with the features presented in this blog post, the current version of Haskey fixes many bugs that severely limited Haskey’s usability. As a result, you can now start using Haskey for serious experimentation. We also very much welcome pull requests and all criticism to help ensure the future of Haskey as a community project (more on that in the final section).</p>
+<p><em>EDIT (9-Apr-2018): Note that this document might use outdated APIs. See <a href="https://github.com/haskell-haskey/haskey-mtl/blob/master/docs/tutorial.md">this up to date tutorial</a>, which covers a lot of the content in this article, to get started with Haskey.</em></p>
+<h2 id="user-defined-schemas-and-multi-table-support">User-defined schemas and multi-table support</h2>
+<p>Haskey stores all data in a tree-like structure called a B+-tree, where the nodes are identified by page numbers pointing to pages in the database. Two specially designated fixed pages contain the metadata of the database. The <a href="https://hackage.haskell.org/package/haskey-0.2.0.0/docs/Database-Haskey-Alloc-Concurrent.html#t:ConcurrentMeta"><code class="sourceCode haskell"><span class="dt">ConcurrentMeta</span></code></a> data type holds this metadata. In the previous version of Haskey, the metadata contained one pointer to a B+-tree root, allowing us to only store one tree (also called table) in the database. In the current version, however, the <a href="https://hackage.haskell.org/package/haskey-0.2.0.0/docs/Database-Haskey-Alloc-Concurrent.html#t:ConcurrentMeta"><code class="sourceCode haskell"><span class="dt">ConcurrentMeta</span></code></a> data type is parameterized over a user-defined <code>root</code> type, as can be seen below.</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb1-1" data-line-number="1"><span class="co">-- Simplified data type definition...</span></a>
+<a class="sourceLine" id="cb1-2" data-line-number="2"><span class="kw">data</span> <span class="dt">ConcurrentMeta</span> root <span class="fu">=</span> <span class="dt">ConcurrentMeta</span> {</a>
+<a class="sourceLine" id="cb1-3" data-line-number="3"><span class="ot">    concurrentMetaRevision ::</span> <span class="dt">TxId</span></a>
+<a class="sourceLine" id="cb1-4" data-line-number="4">    <span class="co">-- Some record fields omitted...</span></a>
+<a class="sourceLine" id="cb1-5" data-line-number="5">  ,<span class="ot"> concurrentMetaRoot ::</span> root</a>
+<a class="sourceLine" id="cb1-6" data-line-number="6">    <span class="co">-- Some record fields omitted...</span></a>
+<a class="sourceLine" id="cb1-7" data-line-number="7">  }</a></code></pre></div>
+<p>This user-defined data type will be stored in the metadata and is passed along to and returned by transactions, as can be seen from the type signature of the <a href="https://hackage.haskell.org/package/haskey-0.2.0.0/docs/Database-Haskey-Alloc-Concurrent.html#v:transact"><code class="sourceCode haskell">transact</code></a> and <a href="https://hackage.haskell.org/package/haskey-0.2.0.0/docs/Database-Haskey-Alloc-Concurrent.html#v:transactReadOnly"><code class="sourceCode haskell">transactReadOnly</code></a> functions. As long as our <code>root</code> type is an instance of the <a href="https://hackage.haskell.org/package/haskey-0.2.0.0/docs/Database-Haskey-Alloc-Concurrent.html#t:Root"><code class="sourceCode haskell"><span class="dt">Root</span></code></a> type class, this essentially allows the user to store and manipulate multiple database trees.</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb2-1" data-line-number="1"><span class="ot">transact ::</span> (<span class="dt">MonadIO</span> m, <span class="dt">MonadMask</span> m, <span class="dt">ConcurrentMetaStoreM</span> m, <span class="dt">Root</span> root)</a>
+<a class="sourceLine" id="cb2-2" data-line-number="2">         <span class="ot">=&gt;</span> (forall n<span class="fu">.</span> (<span class="dt">AllocM</span> n, <span class="dt">MonadMask</span> n) <span class="ot">=&gt;</span> root <span class="ot">-&gt;</span> n (<span class="dt">Transaction</span> root a))</a>
+<a class="sourceLine" id="cb2-3" data-line-number="3">         <span class="ot">-&gt;</span> <span class="dt">ConcurrentDb</span> root</a>
+<a class="sourceLine" id="cb2-4" data-line-number="4">         <span class="ot">-&gt;</span> m a</a>
+<a class="sourceLine" id="cb2-5" data-line-number="5"><span class="ot">transactReadOnly ::</span> (<span class="dt">MonadIO</span> m, <span class="dt">MonadMask</span> m, <span class="dt">ConcurrentMetaStoreM</span> m, <span class="dt">Root</span> root)</a>
+<a class="sourceLine" id="cb2-6" data-line-number="6">                 <span class="ot">=&gt;</span> (forall n<span class="fu">.</span> (<span class="dt">AllocReaderM</span> n, <span class="dt">MonadMask</span> n) <span class="ot">=&gt;</span> root <span class="ot">-&gt;</span> n a)</a>
+<a class="sourceLine" id="cb2-7" data-line-number="7">                 <span class="ot">-&gt;</span> <span class="dt">ConcurrentDb</span> root</a>
+<a class="sourceLine" id="cb2-8" data-line-number="8">                 <span class="ot">-&gt;</span> m a</a></code></pre></div>
+<p>The usage of lenses simplifies querying and manipulating a database with a user-defined schema. As can be seen in the full code example in the section below: <a href="#full-code-example">Full code example</a>.</p>
+<h2 id="the-haskeyt-monad-transformer">The HaskeyT monad transformer</h2>
+<p>Furthermore, we’d also like to introduce the new <a href="https://hackage.haskell.org/package/haskey-mtl-0.2.0.0">haskey-mtl</a> library. This library contains the <a href="https://hackage.haskell.org/package/haskey-mtl-0.2.0.0/docs/Control-Monad-Haskey.html#t:HaskeyT"><code class="sourceCode haskell"><span class="dt">HaskeyT</span></code></a> monad transformer, which is an instance of the <a href="https://hackage.haskell.org/package/haskey-mtl-0.2.0.0/docs/Control-Monad-Haskey.html#t:MonadHaskey"><code class="sourceCode haskell"><span class="dt">MonadHaskey</span></code></a> type class, which has the following definition:</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb3-1" data-line-number="1"><span class="kw">class</span> <span class="dt">Monad</span> m <span class="ot">=&gt;</span> <span class="dt">MonadHaskey</span> root m <span class="fu">|</span> m <span class="ot">-&gt;</span> root <span class="kw">where</span></a>
+<a class="sourceLine" id="cb3-2" data-line-number="2"><span class="ot">    transact ::</span> <span class="dt">Root</span> root</a>
+<a class="sourceLine" id="cb3-3" data-line-number="3">             <span class="ot">=&gt;</span> (forall n<span class="fu">.</span> (<span class="dt">AllocM</span> n, <span class="dt">MonadMask</span> n) <span class="ot">=&gt;</span> root <span class="ot">-&gt;</span> n (<span class="dt">Transaction</span> root a))</a>
+<a class="sourceLine" id="cb3-4" data-line-number="4">             <span class="ot">-&gt;</span> m a</a>
+<a class="sourceLine" id="cb3-5" data-line-number="5"></a>
+<a class="sourceLine" id="cb3-6" data-line-number="6"><span class="ot">    transact_ ::</span> <span class="dt">Root</span> root</a>
+<a class="sourceLine" id="cb3-7" data-line-number="7">              <span class="ot">=&gt;</span> (forall n<span class="fu">.</span> (<span class="dt">AllocM</span> n, <span class="dt">MonadMask</span> n) <span class="ot">=&gt;</span> root <span class="ot">-&gt;</span> n (<span class="dt">Transaction</span> root ()))</a>
+<a class="sourceLine" id="cb3-8" data-line-number="8">              <span class="ot">-&gt;</span> m ()</a>
+<a class="sourceLine" id="cb3-9" data-line-number="9"></a>
+<a class="sourceLine" id="cb3-10" data-line-number="10"><span class="ot">    transactReadOnly ::</span> <span class="dt">Root</span> root</a>
+<a class="sourceLine" id="cb3-11" data-line-number="11">                     <span class="ot">=&gt;</span> (forall n<span class="fu">.</span> (<span class="dt">AllocReaderM</span> n, <span class="dt">MonadMask</span> n) <span class="ot">=&gt;</span> root <span class="ot">-&gt;</span> n a)</a>
+<a class="sourceLine" id="cb3-12" data-line-number="12">                     <span class="ot">-&gt;</span> m a</a></code></pre></div>
+<p>The <a href="https://hackage.haskell.org/package/haskey-mtl-0.2.0.0/docs/Control-Monad-Haskey.html#t:HaskeyT"><code class="sourceCode haskell"><span class="dt">HaskeyT</span></code></a> monad transformer essentially allows you to incorporate access to a Haskey database in your application’s monad transformer stack, by using the <a href="https://hackage.haskell.org/package/haskey-mtl-0.2.0.0/docs/Control-Monad-Haskey.html#v:runFileStoreT"><code class="sourceCode haskell">runFileStoreT</code></a> function. Let’s move on to a full code example.</p>
+<h2 id="full-code-example">Full code example</h2>
+<p>In this section we will dissect the example application included with the <a href="https://github.com/haskell-haskey/haskey-mtl">haskey-mtl</a> library, of which the code can be <a href="https://github.com/haskell-haskey/haskey-mtl/tree/master/example">found on GitHub</a>. We will skip the imports and immediately jump to the definition of our application’s monad transformer stack. Our <code class="sourceCode haskell"><span class="dt">App</span></code> monad is built using a <code class="sourceCode haskell"><span class="dt">ReaderT</span></code> and a <code class="sourceCode haskell"><span class="dt">HaskeyT</span></code> and can simply be run using the <code>runApp</code> function.</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb4-1" data-line-number="1"><span class="kw">newtype</span> <span class="dt">App</span> a <span class="fu">=</span> <span class="dt">AppT</span> (<span class="dt">ReaderT</span> <span class="dt">String</span> (<span class="dt">HaskeyT</span> <span class="dt">Schema</span> <span class="dt">IO</span>) a)</a>
+<a class="sourceLine" id="cb4-2" data-line-number="2">              <span class="kw">deriving</span> (<span class="dt">Functor</span>, <span class="dt">Applicative</span>, <span class="dt">Monad</span>, <span class="dt">MonadIO</span>,</a>
+<a class="sourceLine" id="cb4-3" data-line-number="3">                        <span class="dt">MonadHaskey</span> <span class="dt">Schema</span>, <span class="dt">MonadReader</span> <span class="dt">String</span>)</a>
+<a class="sourceLine" id="cb4-4" data-line-number="4"></a>
+<a class="sourceLine" id="cb4-5" data-line-number="5"><span class="ot">runApp ::</span> <span class="dt">App</span> a</a>
+<a class="sourceLine" id="cb4-6" data-line-number="6">       <span class="ot">-&gt;</span> <span class="dt">String</span></a>
+<a class="sourceLine" id="cb4-7" data-line-number="7">       <span class="ot">-&gt;</span> <span class="dt">ConcurrentDb</span> <span class="dt">Schema</span></a>
+<a class="sourceLine" id="cb4-8" data-line-number="8">       <span class="ot">-&gt;</span> <span class="dt">FileStoreConfig</span></a>
+<a class="sourceLine" id="cb4-9" data-line-number="9">       <span class="ot">-&gt;</span> <span class="dt">IO</span> a</a>
+<a class="sourceLine" id="cb4-10" data-line-number="10">runApp (<span class="dt">AppT</span> m) r <span class="fu">=</span> runFileStoreT (runReaderT m r)</a></code></pre></div>
+<p>Let’s now define the <code class="sourceCode haskell"><span class="dt">Schema</span></code> of our database. We will store a collection of tweets, identified by their unique identifier, and a collection of users who have sent out those tweets, in two separate trees. The <code class="sourceCode haskell"><span class="dt">Schema</span></code> data type instantiates the <a href="https://hackage.haskell.org/package/haskey-0.2.0.0/docs/Database-Haskey-Alloc-Concurrent.html#t:Root"><code class="sourceCode haskell"><span class="dt">Root</span></code></a> type class, which allows us to use it as the type parameter to a <a href="https://hackage.haskell.org/package/haskey-0.2.0.0/docs/Database-Haskey-Alloc-Concurrent.html#t:ConcurrentDb"><code class="sourceCode haskell"><span class="dt">ConcurrentDb</span></code></a>. We also define two lenses to access the fields in this data type, called <code class="sourceCode haskell">schemaTweets</code> and <code class="sourceCode haskell">schemaUsers</code>.</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb5-1" data-line-number="1"></a>
+<a class="sourceLine" id="cb5-2" data-line-number="2"><span class="kw">data</span> <span class="dt">Tweet</span> <span class="fu">=</span> <span class="dt">Tweet</span> {</a>
+<a class="sourceLine" id="cb5-3" data-line-number="3"><span class="ot">    tweetUser ::</span> <span class="fu">!</span><span class="dt">Text</span></a>
+<a class="sourceLine" id="cb5-4" data-line-number="4">  ,<span class="ot"> tweetContent ::</span> <span class="fu">!</span><span class="dt">Text</span></a>
+<a class="sourceLine" id="cb5-5" data-line-number="5">  } <span class="kw">deriving</span> (<span class="dt">Generic</span>, <span class="dt">Show</span>, <span class="dt">Typeable</span>)</a>
+<a class="sourceLine" id="cb5-6" data-line-number="6"></a>
+<a class="sourceLine" id="cb5-7" data-line-number="7"><span class="kw">instance</span> <span class="dt">Binary</span> <span class="dt">Tweet</span></a>
+<a class="sourceLine" id="cb5-8" data-line-number="8"><span class="kw">instance</span> <span class="dt">Value</span> <span class="dt">Tweet</span></a>
+<a class="sourceLine" id="cb5-9" data-line-number="9"></a>
+<a class="sourceLine" id="cb5-10" data-line-number="10"><span class="kw">data</span> <span class="dt">User</span> <span class="fu">=</span> <span class="dt">User</span> {</a>
+<a class="sourceLine" id="cb5-11" data-line-number="11"><span class="ot">    userName ::</span> <span class="fu">!</span><span class="dt">Text</span></a>
+<a class="sourceLine" id="cb5-12" data-line-number="12">  ,<span class="ot"> userEmail ::</span> <span class="fu">!</span><span class="dt">Text</span></a>
+<a class="sourceLine" id="cb5-13" data-line-number="13">  } <span class="kw">deriving</span> (<span class="dt">Generic</span>, <span class="dt">Show</span>, <span class="dt">Typeable</span>)</a>
+<a class="sourceLine" id="cb5-14" data-line-number="14"></a>
+<a class="sourceLine" id="cb5-15" data-line-number="15"><span class="kw">instance</span> <span class="dt">Binary</span> <span class="dt">User</span></a>
+<a class="sourceLine" id="cb5-16" data-line-number="16"><span class="kw">instance</span> <span class="dt">Value</span> <span class="dt">User</span></a>
+<a class="sourceLine" id="cb5-17" data-line-number="17"></a>
+<a class="sourceLine" id="cb5-18" data-line-number="18"><span class="kw">data</span> <span class="dt">Schema</span> <span class="fu">=</span> <span class="dt">Schema</span> {</a>
+<a class="sourceLine" id="cb5-19" data-line-number="19"><span class="ot">    _schemaTweets ::</span> <span class="dt">Tree</span> <span class="dt">Int64</span> <span class="dt">Tweet</span></a>
+<a class="sourceLine" id="cb5-20" data-line-number="20">  ,<span class="ot"> _schemaUsers ::</span> <span class="dt">Tree</span> <span class="dt">Text</span> <span class="dt">User</span></a>
+<a class="sourceLine" id="cb5-21" data-line-number="21">  } <span class="kw">deriving</span> (<span class="dt">Generic</span>, <span class="dt">Show</span>, <span class="dt">Typeable</span>)</a>
+<a class="sourceLine" id="cb5-22" data-line-number="22"></a>
+<a class="sourceLine" id="cb5-23" data-line-number="23"><span class="kw">instance</span> <span class="dt">Binary</span> <span class="dt">Schema</span></a>
+<a class="sourceLine" id="cb5-24" data-line-number="24"><span class="kw">instance</span> <span class="dt">Value</span> <span class="dt">Schema</span></a>
+<a class="sourceLine" id="cb5-25" data-line-number="25"><span class="kw">instance</span> <span class="dt">Root</span> <span class="dt">Schema</span></a>
+<a class="sourceLine" id="cb5-26" data-line-number="26"></a>
+<a class="sourceLine" id="cb5-27" data-line-number="27"><span class="ot">emptySchema ::</span> <span class="dt">Schema</span></a>
+<a class="sourceLine" id="cb5-28" data-line-number="28">emptySchema <span class="fu">=</span> <span class="dt">Schema</span> Tree.empty Tree.empty</a>
+<a class="sourceLine" id="cb5-29" data-line-number="29"></a>
+<a class="sourceLine" id="cb5-30" data-line-number="30"><span class="ot">schemaTweets ::</span> <span class="dt">Lens&#39;</span> <span class="dt">Schema</span> (<span class="dt">Tree</span> <span class="dt">Int64</span> <span class="dt">Tweet</span>)</a>
+<a class="sourceLine" id="cb5-31" data-line-number="31">schemaTweets <span class="fu">=</span> lens _schemaTweets <span class="fu">$</span> \s x <span class="ot">-&gt;</span> s { _schemaTweets <span class="fu">=</span> x }</a>
+<a class="sourceLine" id="cb5-32" data-line-number="32"></a>
+<a class="sourceLine" id="cb5-33" data-line-number="33"><span class="ot">schemaUsers ::</span> <span class="dt">Lens&#39;</span> <span class="dt">Schema</span> (<span class="dt">Tree</span> <span class="dt">Text</span> <span class="dt">User</span>)</a>
+<a class="sourceLine" id="cb5-34" data-line-number="34">schemaUsers <span class="fu">=</span> lens _schemaUsers <span class="fu">$</span> \s x <span class="ot">-&gt;</span> s { _schemaUsers <span class="fu">=</span> x }</a></code></pre></div>
+<p>Lenses allow us to very easily query and manipulate trees in our custom schema. We define some functions using lenses to query and manipulate the database. We use functions like <a href="https://hackage.haskell.org/package/haskey-btree-0.2.0.0/docs/Data-BTree-Impure.html#v:insertTree"><code class="sourceCode haskell">insertTree</code></a> and <a href="https://hackage.haskell.org/package/haskey-btree-0.2.0.0/docs/Data-BTree-Impure.html#v:lookupTree"><code class="sourceCode haskell">lookupTree</code></a> from the <a href="https://hackage.haskell.org/package/haskey-btree-0.2.0.0">haskey-btree</a> package to query and modify the underlying B+-trees. These actions run inside an <code>AllocM</code> or <code>AllocReaderM</code> monad which provide read-write and read-only manipulations of the B+-trees. We can use the <code class="sourceCode haskell">transact</code> and <code class="sourceCode haskell">transactReadOnly</code> functions from the <a href="https://hackage.haskell.org/package/haskey-mtl-0.2.0.0/docs/Control-Monad-Haskey.html#t:MonadHaskey"><code class="sourceCode haskell"><span class="dt">MonadHaskey</span></code></a> type class to execute these functions.</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb6-1" data-line-number="1"><span class="co">-- | Insert or update a tweet.</span></a>
+<a class="sourceLine" id="cb6-2" data-line-number="2"><span class="ot">insertTweet ::</span> <span class="dt">AllocM</span> n <span class="ot">=&gt;</span> <span class="dt">Int64</span> <span class="ot">-&gt;</span> <span class="dt">Tweet</span> <span class="ot">-&gt;</span> <span class="dt">Schema</span> <span class="ot">-&gt;</span> n <span class="dt">Schema</span></a>
+<a class="sourceLine" id="cb6-3" data-line-number="3">insertTweet k v <span class="fu">=</span> schemaTweets <span class="fu">%%~</span> insertTree k v</a>
+<a class="sourceLine" id="cb6-4" data-line-number="4"></a>
+<a class="sourceLine" id="cb6-5" data-line-number="5"><span class="co">-- | Query all tweets.</span></a>
+<a class="sourceLine" id="cb6-6" data-line-number="6"><span class="ot">queryAllTweets ::</span> <span class="dt">AllocReaderM</span> n <span class="ot">=&gt;</span> <span class="dt">Schema</span> <span class="ot">-&gt;</span> n [(<span class="dt">Int64</span>, <span class="dt">Tweet</span>)]</a>
+<a class="sourceLine" id="cb6-7" data-line-number="7">queryAllTweets root <span class="fu">=</span> toList (root <span class="fu">^.</span> schemaTweets)</a>
+<a class="sourceLine" id="cb6-8" data-line-number="8"></a>
+<a class="sourceLine" id="cb6-9" data-line-number="9"><span class="co">-- | Query a tweet.</span></a>
+<a class="sourceLine" id="cb6-10" data-line-number="10"><span class="ot">queryTweet ::</span> <span class="dt">AllocReaderM</span> n <span class="ot">=&gt;</span> <span class="dt">Int64</span> <span class="ot">-&gt;</span> <span class="dt">Schema</span> <span class="ot">-&gt;</span> n (<span class="dt">Maybe</span> <span class="dt">Tweet</span>)</a>
+<a class="sourceLine" id="cb6-11" data-line-number="11">queryTweet k root <span class="fu">=</span> lookupTree k (root <span class="fu">^.</span> schemaTweets)</a>
+<a class="sourceLine" id="cb6-12" data-line-number="12"></a>
+<a class="sourceLine" id="cb6-13" data-line-number="13"><span class="co">-- | Insert a new user.</span></a>
+<a class="sourceLine" id="cb6-14" data-line-number="14"><span class="ot">insertUser ::</span> <span class="dt">AllocM</span> n <span class="ot">=&gt;</span> <span class="dt">Text</span> <span class="ot">-&gt;</span> <span class="dt">User</span> <span class="ot">-&gt;</span> <span class="dt">Schema</span> <span class="ot">-&gt;</span> n <span class="dt">Schema</span></a>
+<a class="sourceLine" id="cb6-15" data-line-number="15">insertUser k v <span class="fu">=</span> schemaUsers <span class="fu">%%~</span> insertTree k v</a>
+<a class="sourceLine" id="cb6-16" data-line-number="16"></a>
+<a class="sourceLine" id="cb6-17" data-line-number="17"><span class="co">-- | Query a user.</span></a>
+<a class="sourceLine" id="cb6-18" data-line-number="18"><span class="ot">queryUser ::</span> <span class="dt">AllocReaderM</span> n <span class="ot">=&gt;</span> <span class="dt">Text</span> <span class="ot">-&gt;</span> <span class="dt">Schema</span> <span class="ot">-&gt;</span> n (<span class="dt">Maybe</span> <span class="dt">User</span>)</a>
+<a class="sourceLine" id="cb6-19" data-line-number="19">queryUser userId root <span class="fu">=</span> lookupTree userId (root <span class="fu">^.</span> schemaUsers)</a></code></pre></div>
+<p>We now have all ingredients to write our application using our custom <code class="sourceCode haskell"><span class="dt">App</span></code> monad. Our application simply stores some tweets and users in the database, and then prints them all out to the console.</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb7-1" data-line-number="1"><span class="ot">main ::</span> <span class="dt">IO</span> ()</a>
+<a class="sourceLine" id="cb7-2" data-line-number="2">main <span class="fu">=</span> <span class="kw">do</span></a>
+<a class="sourceLine" id="cb7-3" data-line-number="3">    <span class="kw">let</span> db <span class="fu">=</span> <span class="st">&quot;/tmp/mtl-example.haskey&quot;</span></a>
+<a class="sourceLine" id="cb7-4" data-line-number="4">    putStrLn <span class="fu">$</span> <span class="st">&quot;Using &quot;</span> <span class="fu">++</span> db</a>
+<a class="sourceLine" id="cb7-5" data-line-number="5">    main&#39; db</a>
+<a class="sourceLine" id="cb7-6" data-line-number="6"></a>
+<a class="sourceLine" id="cb7-7" data-line-number="7"><span class="ot">main&#39; ::</span> FilePath <span class="ot">-&gt;</span> <span class="dt">IO</span> ()</a>
+<a class="sourceLine" id="cb7-8" data-line-number="8">main&#39; fp <span class="fu">=</span> <span class="kw">do</span></a>
+<a class="sourceLine" id="cb7-9" data-line-number="9">    db <span class="ot">&lt;-</span> flip runFileStoreT defFileStoreConfig <span class="fu">$</span></a>
+<a class="sourceLine" id="cb7-10" data-line-number="10">        openConcurrentDb hnds <span class="fu">&gt;&gt;=</span> \<span class="kw">case</span></a>
+<a class="sourceLine" id="cb7-11" data-line-number="11">            <span class="dt">Nothing</span> <span class="ot">-&gt;</span> createConcurrentDb hnds emptySchema</a>
+<a class="sourceLine" id="cb7-12" data-line-number="12">            <span class="dt">Just</span> db <span class="ot">-&gt;</span> return db</a>
+<a class="sourceLine" id="cb7-13" data-line-number="13"></a>
+<a class="sourceLine" id="cb7-14" data-line-number="14">    runApp app <span class="st">&quot;Hello World!&quot;</span> db defFileStoreConfig</a>
+<a class="sourceLine" id="cb7-15" data-line-number="15">  <span class="kw">where</span></a>
+<a class="sourceLine" id="cb7-16" data-line-number="16">    hnds <span class="fu">=</span> concurrentHandles fp</a>
+<a class="sourceLine" id="cb7-17" data-line-number="17"></a>
+<a class="sourceLine" id="cb7-18" data-line-number="18"><span class="ot">app ::</span> <span class="dt">App</span> ()</a>
+<a class="sourceLine" id="cb7-19" data-line-number="19">app <span class="fu">=</span> insertDefaultTweets <span class="fu">&gt;&gt;</span> printTweetsWithUser</a>
+<a class="sourceLine" id="cb7-20" data-line-number="20"></a>
+<a class="sourceLine" id="cb7-21" data-line-number="21"><span class="ot">insertDefaultTweets ::</span> <span class="dt">App</span> ()</a>
+<a class="sourceLine" id="cb7-22" data-line-number="22">insertDefaultTweets <span class="fu">=</span> <span class="kw">do</span></a>
+<a class="sourceLine" id="cb7-23" data-line-number="23">    transact_ <span class="fu">$</span> \schema <span class="ot">-&gt;</span></a>
+<a class="sourceLine" id="cb7-24" data-line-number="24">        foldlM (flip <span class="fu">$</span> uncurry insertUser) schema users</a>
+<a class="sourceLine" id="cb7-25" data-line-number="25">        <span class="fu">&gt;&gt;=</span> commit_</a>
+<a class="sourceLine" id="cb7-26" data-line-number="26"></a>
+<a class="sourceLine" id="cb7-27" data-line-number="27">    transact_ <span class="fu">$</span> \schema <span class="ot">-&gt;</span></a>
+<a class="sourceLine" id="cb7-28" data-line-number="28">        foldlM (flip <span class="fu">$</span> uncurry insertTweet) schema tweets</a>
+<a class="sourceLine" id="cb7-29" data-line-number="29">        <span class="fu">&gt;&gt;=</span> commit_</a>
+<a class="sourceLine" id="cb7-30" data-line-number="30">  <span class="kw">where</span></a>
+<a class="sourceLine" id="cb7-31" data-line-number="31">    users <span class="fu">=</span> [(<span class="st">&quot;foo&quot;</span>, <span class="dt">User</span> <span class="st">&quot;Foo&quot;</span> <span class="st">&quot;foo@example.org&quot;</span>),</a>
+<a class="sourceLine" id="cb7-32" data-line-number="32">             (<span class="st">&quot;bar&quot;</span>, <span class="dt">User</span> <span class="st">&quot;Bar&quot;</span> <span class="st">&quot;bar@example.org&quot;</span>)]</a>
+<a class="sourceLine" id="cb7-33" data-line-number="33">    tweets <span class="fu">=</span> [(<span class="dv">1</span>, <span class="dt">Tweet</span> <span class="st">&quot;foo&quot;</span> <span class="st">&quot;Hey, I&#39;m Foo!&quot;</span>),</a>
+<a class="sourceLine" id="cb7-34" data-line-number="34">              (<span class="dv">2</span>, <span class="dt">Tweet</span> <span class="st">&quot;bar&quot;</span> <span class="st">&quot;Hey, I&#39;m Bar!&quot;</span>),</a>
+<a class="sourceLine" id="cb7-35" data-line-number="35">              (<span class="dv">3</span>, <span class="dt">Tweet</span> <span class="st">&quot;foo&quot;</span> <span class="st">&quot;I like you, Bar!&quot;</span>)]</a>
+<a class="sourceLine" id="cb7-36" data-line-number="36"></a>
+<a class="sourceLine" id="cb7-37" data-line-number="37"><span class="ot">printTweetsWithUser ::</span> <span class="dt">App</span> ()</a>
+<a class="sourceLine" id="cb7-38" data-line-number="38">printTweetsWithUser <span class="fu">=</span> <span class="kw">do</span></a>
+<a class="sourceLine" id="cb7-39" data-line-number="39">    tweets <span class="ot">&lt;-</span> map snd <span class="fu">&lt;$&gt;</span> transactReadOnly queryAllTweets</a>
+<a class="sourceLine" id="cb7-40" data-line-number="40">    users  <span class="ot">&lt;-</span> mapM (\t <span class="ot">-&gt;</span> transactReadOnly <span class="fu">$</span> queryUser (tweetUser t)) tweets</a>
+<a class="sourceLine" id="cb7-41" data-line-number="41">    mapM_ print&#39; <span class="fu">$</span> zip users tweets</a>
+<a class="sourceLine" id="cb7-42" data-line-number="42">  <span class="kw">where</span></a>
+<a class="sourceLine" id="cb7-43" data-line-number="43">    print&#39; (<span class="dt">Just</span> user, tweet) <span class="fu">=</span> liftIO <span class="fu">.</span> putStrLn <span class="fu">$</span> unpack (userName user) <span class="fu">++</span> <span class="st">&quot;: &quot;</span> <span class="fu">++</span> unpack (tweetContent tweet)</a>
+<a class="sourceLine" id="cb7-44" data-line-number="44">    print&#39; (<span class="dt">Nothing</span>  , tweet) <span class="fu">=</span> liftIO <span class="fu">.</span> putStrLn <span class="fu">$</span> <span class="st">&quot;?: &quot;</span> <span class="fu">++</span> unpack (tweetContent tweet)</a></code></pre></div>
+<p>We now have a fully working application that uses a Haskey database to store and query information. When we run the application, we get the following output:</p>
+<pre><code>Using /tmp/mtl-example.haskey
+Foo: Hey, I&#39;m Foo!
+Bar: Hey, I&#39;m Bar!
+Foo: I like you, Bar!</code></pre>
+<h2 id="outlook-and-future-work">Outlook and future work</h2>
+<p>This blog post signals the end of my contributions to Haskey as part of the Summer of Haskell 2017 project. However, I hope to keep working on Haskey in the future, albeit to a lesser extent, due to my ongoing studies and other projects I’m planning to take on. It is our hope that the Haskell community will start experimenting with Haskey, report a lot of issues, make feature requests, and guide the future of Haskey, along with <a href="https://github.com/skeuchel">Steven</a> and me. <b>Anyone that is interested in contributing to Haskey can directly contact me for more information.</b></p>
+<p>To give you an idea where Haskey is going, we’d like to give you the current state of affairs and an outlook on future work. Currently, Haskey is ready for serious experimental use. It provides user-defined schemas with multi-table support, concurrent readers and serialized writers, efficient disk space usage, and a monad transformer-based integration into your applications. Haskey is thus ready to be used in your application as a key-value store. However, the focus during this Summer of Haskell was to develop features and stabilize the binary format rather than to work on performance which we hope to address next to make Haskey performant, scalable and competitive against other solutions (with ACID guarantees) like SQLite or LMDB. We want to exploit the fact that Haskey is written in Haskell to gain better integration with Haskell’s runtime system – in particular its I/O and concurrency sub-systems – than solutions written in other languages. We hope this gives our project a competitive advantage.</p>
+<p>In the future we would like to build on Haskey to provide persistence functionality at a similarly high level as <a href="https://hackage.haskell.org/package/acid-state">acid-state</a>. The <a href="https://hackage.haskell.org/package/acid-state">acid-state</a> package is a popular high-level persistence solution which is strikingly simple because it uses a pure Haskell value as the storage and consequently is unbeaten in transparently hiding the persistence layer. However, <a href="https://hackage.haskell.org/package/acid-state">acid-state</a> is an in-memory solution, which only writes logs and checkpoints to disk for durability, and comes therefore with a set of disadvantages. Keeping the state completely in memory is resource intensive and thus limits the scope of <a href="https://hackage.haskell.org/package/acid-state">acid-state</a> to applications which either have a small state or require the state to be in-memory anyway, e.g. because of latency requirements. For applications that have a large historic and inactive data set, but a small active data set, this is a waste of resources. Furthermore, loading the state and saving checkpoints may take a long time, since the complete state needs to be read or written. By building on Haskey we intend to develop a solution for applications with medium to large data sets that do not fit in-memory. Related to this idea are projects like <a href="https://hackage.haskell.org/package/vcache">vcache</a> and <a href="https://hackage.haskell.org/package/muesli">muesli</a> which we hope to either integrate with or learn from.</p>
+<p>Next to a ready-made easy-to-use solution we would also like to provide more customizable functionality to users by exposing internal components of Haskey such as <a href="https://hackage.haskell.org/package/haskey-btree-0.2.0.0">haskey-btree</a>. That way we give users the opportunity to exploit application specific knowledge for optimizations and allow them to make their own trade-offs in terms of consistency and durability in exchange for throughput and latency. In particular in combination with future planned features like write-ahead logs, in-memory and on-disk caches with user-controlled eviction, optimistic concurrency control with user customizable collision resolution, e.g. via CRDTs (without replication), etc. Having Haskey implemented in Haskell makes it easy and efficient to directly integrate user-defined behavior at the algorithmic level.</p>
+</article>
+]]></summary>
+</entry>
+<entry>
+    <title>Introducing Haskey (Summer of Haskell 2017)</title>
+    <link href="https://deliquus.com/posts/2017-08-24-introducing-haskey.html" />
+    <id>https://deliquus.com/posts/2017-08-24-introducing-haskey.html</id>
+    <published>2017-08-24T00:00:00Z</published>
+    <updated>2017-08-24T00:00:00Z</updated>
+    <summary type="html"><![CDATA[<p>Posted on August 24, 2017  - <a href="https://www.reddit.com/r/haskell/comments/6vqudp/introducing_haskey_summer_of_haskell_2017/?ref=share&ref_source=link">Discussion</a>  - <a href="/">All posts</a></p>
+<p><i>By Henri Verroken</i></p>
+<article>
+  <p>This blog post introduces the <a href="https://github.com/haskell-haskey">Haskey project</a>, an ACID compliant embedded key-value store entirely written in Haskell, based on an MVCC B+-tree implementation. It was developed as part of the <a href="https://summer.haskell.org/news/2017-05-24-accepted-projects.html">Summer of Haskell 2017</a>. We will take a look at two libraries that we wrote this summer.</p>
+<!--more-->
+<p>Before introducing the libraries, I must say I’m extremely grateful that I got the opportunity to be part of this year’s Summer of Haskell. I had really great fun working on this project for the last two months, even though they were incredibly challenging for me, as I had very little experience with the internals of database systems. This is entirely thanks to <a href="https://github.com/skeuchel">Steven Keuchel</a> who not only helped me and guided me during the challenging moments, but also made sure we were able to bond outside of the project. Furthermore, I’d like to thank the people who organized SoH 2017, not only because of the opportunities they have created for me, but also because of all the work they have done. I especially want to thank <a href="https://jaspervdj.be/">Jasper</a>, who helped me a lot with the necessary paperwork</p>
+<p><em><del>Disclaimer: Haskey is not production ready yet. We are still actively making changes to the public API and the internals, as well as the binary format.</del></em></p>
+<p><em>EDIT (9-Apr-2018): Haskey is now considered stable.</em></p>
+<p><em>EDIT (9-Apr-2018): Note that this document gives a good overview on how the library is structured, but might use outdated APIs. See <a href="https://github.com/haskell-haskey/haskey-mtl/blob/master/docs/tutorial.md">this up to date tutorial</a>, which covers a lot of the content in this article, to get started with Haskey.</em></p>
+<h2 id="haskeys-goal-and-design">Haskey’s goal and design</h2>
+<p>The goal of Haskey is to deliver a space efficient, fast and scalable key-value store to the Haskell community, which can be embedded into Haskell projects. To achieve this, we modeled Haskey after <a href="https://symas.com/lightning-memory-mapped-database/">LMDB</a>. Our design is based on an MVCC B+-tree, which allows us to provide non-blocking concurrent read access, and serialized write access, where readers and writers do not block each other.</p>
+<p>The past two months we have implemented this design, which resulted in two libraries, available on Hackage. The first is <a href="https://hackage.haskell.org/package/haskey-btree">haskey-btree</a>, which implements both a copy-in-place and copy-on-write B+-tree. The copy-on-write variant abstracts over an allocator, which is able to write and read B+tree nodes on demand. The second package is called <a href="https://hackage.haskell.org/package/haskey">haskey</a>. This package implements such an allocator. It allocates and manages pages to write the nodes to, and it provides transaction support and concurrent access, as well as data integrity. <a href="https://hackage.haskell.org/package/haskey-btree">haskey-btree</a> modifies the tree, while <a href="https://hackage.haskell.org/package/haskey">haskey</a> supports tree modifications.</p>
+<h2 id="the-b-tree-implementation">The B+-tree implementation</h2>
+<p>The <a href="https://hackage.haskell.org/package/haskey-btree">haskey-btree</a> package includes two separate implementations of B+-trees. The first one can be found in the <a href="https://hackage.haskell.org/package/haskey-btree-0.1.0.0/docs/Data-BTree-Pure.html">Data.BTree.Pure</a> module, which contains a pure, standard, textbook implementation of an in-memory B+-tree of a certain minimum degree. It is a standalone implementation, not used anywhere else in the code base, but still a nice thing to have. More interesting, however, is the copy-on-write B+-tree implementation in <a href="https://hackage.haskell.org/package/haskey-btree-0.1.0.0/docs/Data-BTree-Impure.html">Data.BTree.Impure</a>.</p>
+<p>If we look at some functions in <a href="https://hackage.haskell.org/package/haskey-btree-0.1.0.0/docs/Data-BTree-Impure.html">Data.BTree.Impure</a> that are used to modify and query the tree, we notice the following type signatures:</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb1-1" data-line-number="1"><span class="ot">lookupTree ::</span> (<span class="dt">AllocReaderM</span> m, <span class="dt">Key</span> key, <span class="dt">Value</span> val)</a>
+<a class="sourceLine" id="cb1-2" data-line-number="2">          <span class="ot">=&gt;</span> key</a>
+<a class="sourceLine" id="cb1-3" data-line-number="3">          <span class="ot">-&gt;</span> <span class="dt">Tree</span> key val<span class="ot">-&gt;</span> m (<span class="dt">Maybe</span> val)</a>
+<a class="sourceLine" id="cb1-4" data-line-number="4"></a>
+<a class="sourceLine" id="cb1-5" data-line-number="5"><span class="ot">insertTree ::</span> (<span class="dt">AllocM</span> m, <span class="dt">Key</span> key, <span class="dt">Value</span> val)</a>
+<a class="sourceLine" id="cb1-6" data-line-number="6">            <span class="ot">=&gt;</span> key</a>
+<a class="sourceLine" id="cb1-7" data-line-number="7">            <span class="ot">-&gt;</span> val</a>
+<a class="sourceLine" id="cb1-8" data-line-number="8">            <span class="ot">-&gt;</span> <span class="dt">Tree</span> key val</a>
+<a class="sourceLine" id="cb1-9" data-line-number="9">            <span class="ot">-&gt;</span> m (<span class="dt">Tree</span> key val)</a>
+<a class="sourceLine" id="cb1-10" data-line-number="10"></a>
+<a class="sourceLine" id="cb1-11" data-line-number="11"><span class="ot">deleteTree ::</span> (<span class="dt">AllocM</span> m, <span class="dt">Key</span> key, <span class="dt">Value</span> val)</a>
+<a class="sourceLine" id="cb1-12" data-line-number="12">           <span class="ot">=&gt;</span> key</a>
+<a class="sourceLine" id="cb1-13" data-line-number="13">           <span class="ot">-&gt;</span> <span class="dt">Tree</span> key val</a>
+<a class="sourceLine" id="cb1-14" data-line-number="14">           <span class="ot">-&gt;</span> m (<span class="dt">Tree</span> key val)</a></code></pre></div>
+<p>We can see that the functions operate in either the <a href="https://hackage.haskell.org/package/haskey-btree-0.1.0.0/docs/Data-BTree-Alloc-Class.html#t:AllocReaderM"><code class="sourceCode haskell"><span class="dt">AllocReaderM</span></code></a> or the <a href="https://hackage.haskell.org/package/haskey-btree-0.1.0.0/docs/Data-BTree-Alloc-Class.html#t:AllocM"><code class="sourceCode haskell"><span class="dt">AllocM</span></code></a> monad. Let’s take a closer look at the definitions of these type classes:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb2-1" data-line-number="1"><span class="kw">class</span> <span class="dt">Monad</span> m <span class="ot">=&gt;</span> <span class="dt">AllocReaderM</span> m <span class="kw">where</span></a>
+<a class="sourceLine" id="cb2-2" data-line-number="2"><span class="ot">  readNode ::</span> (<span class="dt">Key</span> key, <span class="dt">Value</span> val)</a>
+<a class="sourceLine" id="cb2-3" data-line-number="3">           <span class="ot">=&gt;</span> <span class="dt">Height</span> height</a>
+<a class="sourceLine" id="cb2-4" data-line-number="4">           <span class="ot">-&gt;</span> <span class="dt">NodeId</span> height key val</a>
+<a class="sourceLine" id="cb2-5" data-line-number="5">           <span class="ot">-&gt;</span> m (<span class="dt">Node</span> height key val)</a>
+<a class="sourceLine" id="cb2-6" data-line-number="6"></a>
+<a class="sourceLine" id="cb2-7" data-line-number="7"><span class="ot">  readOverflow ::</span> <span class="dt">Value</span> val <span class="ot">=&gt;</span> <span class="dt">OverflowId</span> <span class="ot">-&gt;</span> m val</a>
+<a class="sourceLine" id="cb2-8" data-line-number="8"></a>
+<a class="sourceLine" id="cb2-9" data-line-number="9"><span class="co">-- Not all functions included...</span></a>
+<a class="sourceLine" id="cb2-10" data-line-number="10"><span class="kw">class</span> <span class="dt">AllocReaderM</span> m <span class="ot">=&gt;</span> <span class="dt">AllocM</span> m <span class="kw">where</span></a>
+<a class="sourceLine" id="cb2-11" data-line-number="11"><span class="ot">  allocNode ::</span> (<span class="dt">Key</span> key, <span class="dt">Value</span> val)</a>
+<a class="sourceLine" id="cb2-12" data-line-number="12">            <span class="ot">=&gt;</span> <span class="dt">Height</span> height</a>
+<a class="sourceLine" id="cb2-13" data-line-number="13">            <span class="ot">-&gt;</span> <span class="dt">Node</span> height key val</a>
+<a class="sourceLine" id="cb2-14" data-line-number="14">            <span class="ot">-&gt;</span> m (<span class="dt">NodeId</span> height key val)</a>
+<a class="sourceLine" id="cb2-15" data-line-number="15"><span class="ot">  freeNode ::</span> <span class="dt">Height</span> height <span class="ot">-&gt;</span> <span class="dt">NodeId</span> height key val <span class="ot">-&gt;</span> m ()</a>
+<a class="sourceLine" id="cb2-16" data-line-number="16"></a>
+<a class="sourceLine" id="cb2-17" data-line-number="17"><span class="ot">  allocOverflow ::</span> <span class="dt">Value</span> val <span class="ot">=&gt;</span> val <span class="ot">-&gt;</span> m <span class="dt">OverflowId</span></a>
+<a class="sourceLine" id="cb2-18" data-line-number="18"><span class="ot">  freeOverflow ::</span> <span class="dt">OverflowId</span> <span class="ot">-&gt;</span> m ()</a></code></pre></div>
+<p>We can see that the <a href="https://hackage.haskell.org/package/haskey-btree-0.1.0.0/docs/Data-BTree-Alloc-Class.html#t:AllocReaderM"><code class="sourceCode haskell"><span class="dt">AllocReaderM</span></code></a> type class supports operations to read B+-tree nodes and overflow values with a certain ID, while the <a href="https://hackage.haskell.org/package/haskey-btree-0.1.0.0/docs/Data-BTree-Alloc-Class.html#t:AllocM"><code class="sourceCode haskell"><span class="dt">AllocM</span></code></a> type class supports operations to write and free B+-tree nodes and overflow values. How do we get such an allocator? Well, the <a href="https://hackage.haskell.org/package/haskey-btree-0.1.0.0/docs/Data-BTree-Alloc-Debug.html">Date.BTree.Alloc.Debug</a> module contains an in-memory allocator based on <a href="https://hackage.haskell.org/package/containers-0.5.7.1/docs/Data-Map-Lazy.html#t:Map">Data.Map</a>. It is very inefficient, and solely intended for testing and debugging purposes, but it provides a good example on how to start implementing an allocator from scratch.</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb3-1" data-line-number="1"><span class="kw">import</span> <span class="dt">Data.BTree.Alloc.Debug</span> (<span class="dt">Pages</span>, runDebugT, emptyPages)</a>
+<a class="sourceLine" id="cb3-2" data-line-number="2"><span class="kw">import</span> <span class="dt">Data.BTree.Impure</span> (<span class="dt">Tree</span>, empty, insertTree)</a>
+<a class="sourceLine" id="cb3-3" data-line-number="3"></a>
+<a class="sourceLine" id="cb3-4" data-line-number="4"><span class="ot">debugAllocatorExample ::</span> (<span class="dt">Tree</span> <span class="dt">ByteString</span> <span class="dt">ByteString</span>, <span class="dt">Pages</span>)</a>
+<a class="sourceLine" id="cb3-5" data-line-number="5">debugAllocatorExample <span class="fu">=</span> runDebugT emptyPages <span class="fu">$</span> <span class="kw">do</span></a>
+<a class="sourceLine" id="cb3-6" data-line-number="6">      return empty</a>
+<a class="sourceLine" id="cb3-7" data-line-number="7">  <span class="fu">&gt;&gt;=</span> insertTree <span class="st">&quot;key1&quot;</span> <span class="st">&quot;wrong value&quot;</span></a>
+<a class="sourceLine" id="cb3-8" data-line-number="8">  <span class="fu">&gt;&gt;=</span> insertTree <span class="st">&quot;key1&quot;</span> <span class="st">&quot;correct value&quot;</span></a>
+<a class="sourceLine" id="cb3-9" data-line-number="9">  <span class="fu">&gt;&gt;=</span> insertTree <span class="st">&quot;key2&quot;</span> <span class="st">&quot;other value&quot;</span></a></code></pre></div>
+<p>In the code listing above you can see the debug allocator in action. For a more robust, space efficient and thread-safe allocator we have to turn to the <a href="https://hackage.haskell.org/package/haskey">haskey</a> library.</p>
+<h2 id="robust-thread-safe-allocator">Robust, thread-safe allocator</h2>
+<p>The <a href="https://hackage.haskell.org/package/haskey">haskey</a> library builds upon the <a href="https://hackage.haskell.org/package/haskey-btree">haskey-btree</a> library by providing a robust, thread-safe page allocator with transaction support. It allows for multiple concurrent readers which do not block each other, and serialized write access. Furthermore, readers do not block writers, and vice versa.</p>
+<p>The actual allocator is implemented in an internal module called <a href="http://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Alloc-Concurrent-Monad.html">Database.Haskey.Alloc.Concurrent.Monad</a>, but you don’t really need to know about it. The exported functions in <a href="https://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Alloc-Concurrent.html">Database.Haskey.Alloc.Concurrent</a> use this monad internally, and they are sufficient to use the allocator. The following functions are particularly interesting:</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb4-1" data-line-number="1"><span class="co">-- Simplified type signatures...</span></a>
+<a class="sourceLine" id="cb4-2" data-line-number="2"><span class="ot">createConcurrentDb ::</span> (<span class="dt">ConcurrentMetaStoreM</span> m, <span class="dt">Key</span> k, <span class="dt">Value</span> v)</a>
+<a class="sourceLine" id="cb4-3" data-line-number="3">                   <span class="ot">=&gt;</span> <span class="dt">ConcurrentHandles</span></a>
+<a class="sourceLine" id="cb4-4" data-line-number="4">                   <span class="ot">-&gt;</span> m (<span class="dt">ConcurrentDb</span> k v)</a>
+<a class="sourceLine" id="cb4-5" data-line-number="5"></a>
+<a class="sourceLine" id="cb4-6" data-line-number="6"><span class="ot">openConcurrentDb ::</span> (<span class="dt">Key</span> k, <span class="dt">Value</span> v, <span class="dt">ConcurrentMetaStoreM</span> m)</a>
+<a class="sourceLine" id="cb4-7" data-line-number="7">                 <span class="ot">=&gt;</span> <span class="dt">ConcurrentHandles</span></a>
+<a class="sourceLine" id="cb4-8" data-line-number="8">                 <span class="ot">-&gt;</span> m (<span class="dt">Maybe</span> (<span class="dt">ConcurrentDb</span> k v))</a>
+<a class="sourceLine" id="cb4-9" data-line-number="9"></a>
+<a class="sourceLine" id="cb4-10" data-line-number="10"><span class="ot">transact ::</span> (<span class="dt">ConcurrentMetaStoreM</span> m, <span class="dt">Key</span> k, <span class="dt">Value</span> v)</a>
+<a class="sourceLine" id="cb4-11" data-line-number="11">         <span class="ot">=&gt;</span> (forall n<span class="fu">.</span> <span class="dt">AllocM</span> n <span class="ot">=&gt;</span> <span class="dt">Tree</span> key val <span class="ot">-&gt;</span> n (<span class="dt">Transaction</span> key val a))</a>
+<a class="sourceLine" id="cb4-12" data-line-number="12">         <span class="ot">-&gt;</span> <span class="dt">ConcurrentDb</span> key val</a>
+<a class="sourceLine" id="cb4-13" data-line-number="13">         <span class="ot">-&gt;</span> m a</a>
+<a class="sourceLine" id="cb4-14" data-line-number="14"></a>
+<a class="sourceLine" id="cb4-15" data-line-number="15"><span class="ot">transactReadOnly ::</span> (<span class="dt">ConcurrentMetaStoreM</span> m, <span class="dt">Key</span> k, <span class="dt">Value</span> v)</a>
+<a class="sourceLine" id="cb4-16" data-line-number="16">                 <span class="ot">=&gt;</span> (forall n<span class="fu">.</span> <span class="dt">AllocReaderM</span> n <span class="ot">=&gt;</span> <span class="dt">Tree</span> key val <span class="ot">-&gt;</span> n a)</a>
+<a class="sourceLine" id="cb4-17" data-line-number="17">                 <span class="ot">-&gt;</span> <span class="dt">ConcurrentDb</span> key val</a>
+<a class="sourceLine" id="cb4-18" data-line-number="18">                 <span class="ot">-&gt;</span> m a</a></code></pre></div>
+<p>The <a href="http://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Alloc-Concurrent.html#v:openConcurrentDb"><code class="sourceCode haskell">openConcurrentDb</code></a> and <a href="http://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Alloc-Concurrent.html#v:createConcurrentDb"><code class="sourceCode haskell">createConcurrentDb</code></a> functions are used to create new and open existing databases. While the <a href="http://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Alloc-Concurrent.html#v:transact"><code class="sourceCode haskell">transact</code></a> and the <a href="http://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Alloc-Concurrent.html#v:transactReadOnly"><code class="sourceCode haskell">transactReadOnly</code></a> functions are used to start read-write and read-only transactions.</p>
+<p>We can see that the <a href="http://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Alloc-Concurrent.html#v:transact"><code class="sourceCode haskell">transact</code></a> and <a href="http://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Alloc-Concurrent.html#v:transactReadOnly"><code class="sourceCode haskell">transactReadOnly</code></a> functions take a function that takes a tree root and can do <a href="https://hackage.haskell.org/package/haskey-btree-0.1.0.0/docs/Data-BTree-Alloc-Class.html#t:AllocM"><code class="sourceCode haskell"><span class="dt">AllocM</span></code></a> and <a href="https://hackage.haskell.org/package/haskey-btree-0.1.0.0/docs/Data-BTree-Alloc-Class.html#t:AllocReaderM"><code class="sourceCode haskell"><span class="dt">AllocReaderM</span></code></a> actions. Exactly what we need to run tree modifications and queries from <a href="https://hackage.haskell.org/package/haskey-btree-0.1.0.0/docs/Data-BTree-Impure.html">Data.BTree.Impure</a>! Excellent!</p>
+<p>But there is one more catch! We need to run these functions in a <a href="http://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Alloc-Concurrent.html#t:ConcurrentMetaStoreM"><code class="sourceCode haskell"><span class="dt">ConcurrentMetaStoreM</span></code></a>! Where can we find such a monad?</p>
+<h2 id="the-storage-back-end">The storage back-end</h2>
+<p>Let’s take a closer look to the <a href="http://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Alloc-Concurrent.html#t:ConcurrentMetaStoreM"><code class="sourceCode haskell"><span class="dt">ConcurrentMetaStoreM</span></code></a> type class. The functions in the type class aren’t all that interesting, but the superclass is! It’s the <a href="http://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Store-Class.html#t:StoreM"><code class="sourceCode haskell"><span class="dt">StoreM</span></code></a> class:</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb5-1" data-line-number="1"><span class="kw">class</span> <span class="dt">StoreM</span> FilePath m <span class="ot">=&gt;</span> <span class="dt">ConcurrentMetaStoreM</span> m <span class="kw">where</span></a>
+<a class="sourceLine" id="cb5-2" data-line-number="2">  <span class="co">-- Omitted type class body...</span></a>
+<a class="sourceLine" id="cb5-3" data-line-number="3"></a>
+<a class="sourceLine" id="cb5-4" data-line-number="4"><span class="co">-- Simplified type signatures, not all functions included...</span></a>
+<a class="sourceLine" id="cb5-5" data-line-number="5"><span class="kw">class</span> <span class="dt">Monad</span> m <span class="ot">=&gt;</span> <span class="dt">StoreM</span> hnd m <span class="fu">|</span> m <span class="ot">-&gt;</span> hnd <span class="kw">where</span></a>
+<a class="sourceLine" id="cb5-6" data-line-number="6"><span class="ot">  putNodePage ::</span> (<span class="dt">Key</span> key, <span class="dt">Value</span> val)</a>
+<a class="sourceLine" id="cb5-7" data-line-number="7">              <span class="ot">=&gt;</span> hnd</a>
+<a class="sourceLine" id="cb5-8" data-line-number="8">              <span class="ot">-&gt;</span> <span class="dt">Height</span> height</a>
+<a class="sourceLine" id="cb5-9" data-line-number="9">              <span class="ot">-&gt;</span> <span class="dt">NodeId</span> height key val</a>
+<a class="sourceLine" id="cb5-10" data-line-number="10">              <span class="ot">-&gt;</span> <span class="dt">Node</span> height key val</a>
+<a class="sourceLine" id="cb5-11" data-line-number="11">              <span class="ot">-&gt;</span> m ()</a>
+<a class="sourceLine" id="cb5-12" data-line-number="12"></a>
+<a class="sourceLine" id="cb5-13" data-line-number="13"><span class="ot">  getNodePage ::</span> (<span class="dt">Key</span> key, <span class="dt">Value</span> val)</a>
+<a class="sourceLine" id="cb5-14" data-line-number="14">              <span class="ot">=&gt;</span> hnd</a>
+<a class="sourceLine" id="cb5-15" data-line-number="15">              <span class="ot">-&gt;</span> <span class="dt">Height</span> height</a>
+<a class="sourceLine" id="cb5-16" data-line-number="16">              <span class="ot">-&gt;</span> <span class="dt">NodeId</span> height key val</a>
+<a class="sourceLine" id="cb5-17" data-line-number="17">              <span class="ot">-&gt;</span> m (<span class="dt">Node</span> height key val)</a>
+<a class="sourceLine" id="cb5-18" data-line-number="18"></a>
+<a class="sourceLine" id="cb5-19" data-line-number="19"><span class="ot">  putOverflow ::</span> <span class="dt">Value</span> val <span class="ot">=&gt;</span> hnd <span class="ot">-&gt;</span> val m ()</a>
+<a class="sourceLine" id="cb5-20" data-line-number="20"><span class="ot">  getOverflow ::</span> <span class="dt">Value</span> val <span class="ot">=&gt;</span> hnd <span class="ot">-&gt;</span> m val</a></code></pre></div>
+<p>We can see that the <a href="http://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Store-Class.html#t:StoreM"><code class="sourceCode haskell"><span class="dt">StoreM</span></code></a> type class simply abstracts over a storage back-end that can read and write pages and overflow values. There are two built-in storage back-ends. One is the <a href="https://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Store-InMemory.html">InMemory</a> storage back-end, which we’ll let you discover by yourself. The other one is the on-disk store in <a href="https://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Store-File.html">Database.Haskey.Store.File</a>. Let’s look at the interesting functions.</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb6-1" data-line-number="1"><span class="ot">newFileStore ::</span> <span class="dt">IO</span> (<span class="dt">Files</span> fp)</a>
+<a class="sourceLine" id="cb6-2" data-line-number="2"></a>
+<a class="sourceLine" id="cb6-3" data-line-number="3"><span class="ot">runFileStoreT ::</span> <span class="dt">FileStoreT</span> fp m a <span class="co">-- ^ Database actions</span></a>
+<a class="sourceLine" id="cb6-4" data-line-number="4">              <span class="ot">-&gt;</span> <span class="dt">FileStoreConfig</span>   <span class="co">-- ^ Database configuration</span></a>
+<a class="sourceLine" id="cb6-5" data-line-number="5">              <span class="ot">-&gt;</span> <span class="dt">Files</span> fp          <span class="co">-- ^ Open database files</span></a>
+<a class="sourceLine" id="cb6-6" data-line-number="6">              <span class="ot">-&gt;</span> m a</a></code></pre></div>
+<p>The <a href="https://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Store-File.html#v:newFileStore"><code class="sourceCode haskell">newFileStore</code></a> function creates a new uninitialized state for the file storage back-end. This is a simple <code class="sourceCode haskell"><span class="dt">IORef</span></code> that can safely be accessed by concurrent threads. Those threads can safely call <a href="https://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Store-File.html#v:runFileStoreT"><code class="sourceCode haskell">runFileStoreT</code></a> with that state.</p>
+<p>The <a href="https://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Store-File.html#v:runFileStoreT"><code class="sourceCode haskell">runFileStoreT</code></a> function takes a <a href="https://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Store-File.html#t:FileStoreT"><code class="sourceCode haskell"><span class="dt">FileStoreT</span></code></a> action. Lucky for us, there is an instance of <a href="https://hackage.haskell.org/package/haskey-btree-0.1.0.0/docs/Data-BTree-Alloc-Class.html#t:AllocM"><code class="sourceCode haskell"><span class="dt">AllocM</span></code></a> and <a href="http://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Alloc-Concurrent.html#t:ConcurrentMetaStoreM"><code class="sourceCode haskell"><span class="dt">ConcurrentMetaStoreM</span></code></a> for <a href="https://hackage.haskell.org/package/haskey-0.1.0.1/docs/Database-Haskey-Store-File.html#t:FileStoreT"><code class="sourceCode haskell"><span class="dt">FileStoreT</span></code></a> ! This allows us to run our beloved transactions.</p>
+<h2 id="full-code-example">Full code example</h2>
+<p>We now have all the pieces to stitch together an example. Let the code do the talking! Example code is also available on <a href="https://github.com/haskell-haskey/haskey/tree/master/example">GitHub</a><a href="#fn1" class="footnote-ref" id="fnref1"><sup>1</sup></a>.</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb7-1" data-line-number="1"><span class="kw">module</span> <span class="dt">Main</span> <span class="kw">where</span></a>
+<a class="sourceLine" id="cb7-2" data-line-number="2"></a>
+<a class="sourceLine" id="cb7-3" data-line-number="3"><span class="kw">import</span> <span class="dt">Control.Concurrent.Async</span> (async, wait)</a>
+<a class="sourceLine" id="cb7-4" data-line-number="4"><span class="kw">import</span> <span class="dt">Control.Monad</span> (void, replicateM)</a>
+<a class="sourceLine" id="cb7-5" data-line-number="5"></a>
+<a class="sourceLine" id="cb7-6" data-line-number="6"><span class="kw">import</span> <span class="dt">Data.BTree.Impure</span> (toList, insertTree)</a>
+<a class="sourceLine" id="cb7-7" data-line-number="7"><span class="kw">import</span> <span class="dt">Data.ByteString</span> (<span class="dt">ByteString</span>)</a>
+<a class="sourceLine" id="cb7-8" data-line-number="8"><span class="kw">import</span> <span class="dt">Data.Int</span> (<span class="dt">Int32</span>)</a>
+<a class="sourceLine" id="cb7-9" data-line-number="9"><span class="kw">import</span> <span class="dt">Data.Text.Encoding</span> (encodeUtf8)</a>
+<a class="sourceLine" id="cb7-10" data-line-number="10"><span class="kw">import</span> <span class="kw">qualified</span> <span class="dt">Data.Text</span> <span class="kw">as</span> <span class="dt">Text</span></a>
+<a class="sourceLine" id="cb7-11" data-line-number="11"></a>
+<a class="sourceLine" id="cb7-12" data-line-number="12"><span class="kw">import</span> <span class="dt">Database.Haskey.Alloc.Concurrent</span> (<span class="dt">ConcurrentDb</span>,</a>
+<a class="sourceLine" id="cb7-13" data-line-number="13">                                         <span class="dt">ConcurrentHandles</span>,</a>
+<a class="sourceLine" id="cb7-14" data-line-number="14">                                         concurrentHandles,</a>
+<a class="sourceLine" id="cb7-15" data-line-number="15">                                         openConcurrentDb,</a>
+<a class="sourceLine" id="cb7-16" data-line-number="16">                                         createConcurrentDb,</a>
+<a class="sourceLine" id="cb7-17" data-line-number="17">                                         transact_,</a>
+<a class="sourceLine" id="cb7-18" data-line-number="18">                                         transactReadOnly,</a>
+<a class="sourceLine" id="cb7-19" data-line-number="19">                                         commit_)</a>
+<a class="sourceLine" id="cb7-20" data-line-number="20"><span class="kw">import</span> <span class="dt">Database.Haskey.Store.File</span> (<span class="dt">FileStoreT</span>, <span class="dt">Files</span>, newFileStore,</a>
+<a class="sourceLine" id="cb7-21" data-line-number="21">                                   runFileStoreT, defFileStoreConfig)</a>
+<a class="sourceLine" id="cb7-22" data-line-number="22"></a>
+<a class="sourceLine" id="cb7-23" data-line-number="23"><span class="ot">main ::</span> <span class="dt">IO</span> ()</a>
+<a class="sourceLine" id="cb7-24" data-line-number="24">main <span class="fu">=</span> <span class="kw">do</span></a>
+<a class="sourceLine" id="cb7-25" data-line-number="25">    store <span class="ot">&lt;-</span> newFileStore</a>
+<a class="sourceLine" id="cb7-26" data-line-number="26">    db    <span class="ot">&lt;-</span> openOrCreate store</a>
+<a class="sourceLine" id="cb7-27" data-line-number="27"></a>
+<a class="sourceLine" id="cb7-28" data-line-number="28">    writers <span class="ot">&lt;-</span> mapM (async <span class="fu">.</span> writer store db) [<span class="dv">1</span><span class="fu">..</span><span class="dv">100</span>]</a>
+<a class="sourceLine" id="cb7-29" data-line-number="29">    readers <span class="ot">&lt;-</span> replicateM <span class="dv">100</span> <span class="fu">$</span> async (reader store db)</a>
+<a class="sourceLine" id="cb7-30" data-line-number="30">    mapM_ wait writers</a>
+<a class="sourceLine" id="cb7-31" data-line-number="31">    mapM_ wait readers</a>
+<a class="sourceLine" id="cb7-32" data-line-number="32">    putStrLn <span class="st">&quot;Done&quot;</span></a>
+<a class="sourceLine" id="cb7-33" data-line-number="33"></a>
+<a class="sourceLine" id="cb7-34" data-line-number="34"></a>
+<a class="sourceLine" id="cb7-35" data-line-number="35"><span class="ot">writer ::</span> <span class="dt">Files</span> FilePath</a>
+<a class="sourceLine" id="cb7-36" data-line-number="36">       <span class="ot">-&gt;</span> <span class="dt">ConcurrentDb</span> <span class="dt">Int32</span> <span class="dt">ByteString</span></a>
+<a class="sourceLine" id="cb7-37" data-line-number="37">       <span class="ot">-&gt;</span> <span class="dt">Int32</span></a>
+<a class="sourceLine" id="cb7-38" data-line-number="38">       <span class="ot">-&gt;</span> <span class="dt">IO</span> ()</a>
+<a class="sourceLine" id="cb7-39" data-line-number="39">writer store db i <span class="fu">=</span></a>
+<a class="sourceLine" id="cb7-40" data-line-number="40">    runDatabase store <span class="fu">$</span> transact_ tx db</a>
+<a class="sourceLine" id="cb7-41" data-line-number="41">  <span class="kw">where</span></a>
+<a class="sourceLine" id="cb7-42" data-line-number="42">    bs <span class="fu">=</span> encodeUtf8 <span class="fu">$</span> Text.pack (show i)</a>
+<a class="sourceLine" id="cb7-43" data-line-number="43"></a>
+<a class="sourceLine" id="cb7-44" data-line-number="44">    tx tree <span class="fu">=</span> insertTree i bs tree <span class="fu">&gt;&gt;=</span> commit_</a>
+<a class="sourceLine" id="cb7-45" data-line-number="45"></a>
+<a class="sourceLine" id="cb7-46" data-line-number="46"><span class="ot">reader ::</span> <span class="dt">Files</span> FilePath</a>
+<a class="sourceLine" id="cb7-47" data-line-number="47">       <span class="ot">-&gt;</span> <span class="dt">ConcurrentDb</span> <span class="dt">Int32</span> <span class="dt">ByteString</span></a>
+<a class="sourceLine" id="cb7-48" data-line-number="48">       <span class="ot">-&gt;</span> <span class="dt">IO</span> ()</a>
+<a class="sourceLine" id="cb7-49" data-line-number="49">reader files db <span class="fu">=</span> void <span class="fu">$</span> replicateM <span class="dv">100</span> <span class="fu">$</span> runDatabase files <span class="fu">$</span></a>
+<a class="sourceLine" id="cb7-50" data-line-number="50">    transactReadOnly toList db</a>
+<a class="sourceLine" id="cb7-51" data-line-number="51"></a>
+<a class="sourceLine" id="cb7-52" data-line-number="52"><span class="ot">openOrCreate ::</span> <span class="dt">Files</span> FilePath</a>
+<a class="sourceLine" id="cb7-53" data-line-number="53">             <span class="ot">-&gt;</span> <span class="dt">IO</span> (<span class="dt">ConcurrentDb</span> <span class="dt">Int32</span> <span class="dt">ByteString</span>)</a>
+<a class="sourceLine" id="cb7-54" data-line-number="54">openOrCreate store <span class="fu">=</span> runDatabase store <span class="fu">$</span> <span class="kw">do</span></a>
+<a class="sourceLine" id="cb7-55" data-line-number="55">    maybeDb <span class="ot">&lt;-</span> openConcurrentDb handles</a>
+<a class="sourceLine" id="cb7-56" data-line-number="56">    <span class="kw">case</span> maybeDb <span class="kw">of</span></a>
+<a class="sourceLine" id="cb7-57" data-line-number="57">        <span class="dt">Nothing</span> <span class="ot">-&gt;</span> createConcurrentDb handles</a>
+<a class="sourceLine" id="cb7-58" data-line-number="58">        <span class="dt">Just</span> db <span class="ot">-&gt;</span> return db</a>
+<a class="sourceLine" id="cb7-59" data-line-number="59"></a>
+<a class="sourceLine" id="cb7-60" data-line-number="60"><span class="ot">runDatabase ::</span> <span class="dt">Files</span> FilePath</a>
+<a class="sourceLine" id="cb7-61" data-line-number="61">            <span class="ot">-&gt;</span> <span class="dt">FileStoreT</span> FilePath m a</a>
+<a class="sourceLine" id="cb7-62" data-line-number="62">            <span class="ot">-&gt;</span> m a</a>
+<a class="sourceLine" id="cb7-63" data-line-number="63">runDatabase files action <span class="fu">=</span> runFileStoreT action defFileStoreConfig files</a>
+<a class="sourceLine" id="cb7-64" data-line-number="64"></a>
+<a class="sourceLine" id="cb7-65" data-line-number="65"><span class="ot">handles ::</span> <span class="dt">ConcurrentHandles</span></a>
+<a class="sourceLine" id="cb7-66" data-line-number="66">handles <span class="fu">=</span> concurrentHandles <span class="st">&quot;example-database.haskey&quot;</span></a></code></pre></div>
+<section class="footnotes">
+<hr />
+<ol>
+<li id="fn1"><p>Note that at the moment concurrent readers are disabled, because of a race condition in the code. However, the code example will work.<a href="#fnref1" class="footnote-back">↩</a></p></li>
+</ol>
+</section>
+</article>
+]]></summary>
+</entry>
+
+</feed>

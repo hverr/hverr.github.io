@@ -1,0 +1,7 @@
+# Vim
+.*.sw[a-z]
+
+# Hakyll
+.stack-work
+_cache
+_site
